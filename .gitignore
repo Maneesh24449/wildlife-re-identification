@@ -1,0 +1,31 @@
+# Python virtual environment
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# Heavy data and binaries
+data/
+cache/
+*.zip
+*.npy
+*.npz
+
+# Temporary / test files
+PASTE_GOOGLE_DOC_HERE.txt
+check_*.py
+test_*.py
+fast_experiments.py
+tune_*.py
+cv_*.py
+generate_notebook.py
+eda.py
+wildlife_reid_pipeline.py
+submission_*_*.csv
+PROJECT_REPORT.md
+
+# Checkpoints / IDE
+.vscode/
+.idea/
+.ipynb_checkpoints/
