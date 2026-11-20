@@ -41,23 +41,26 @@ As required by the project instructions, we developed three distinct model versi
 
 | Model Version | Description | Key Additions | Local CV MAP@5 | Kaggle Public Score |
 | :--- | :--- | :--- | :---: | :---: |
-| **Model 1: Baseline** | Cosine Similarity k-NN | L2-normalization, nearest neighbors, naive rank-5 `new_individual` | 0.5834 | ~0.58 |
+| **Model 1: Baseline** | Cosine Similarity k-NN | L2-normalization, nearest neighbors, naive rank-5 `new_individual` | 0.5834 | — |
 | **Model 2: Enhanced k-NN** | Viewpoint + Calibrated Thresholding | Flank asymmetry penalty, binary decision boundary for novel animals | 0.8305 | 0.75821 |
 | **Model 3: Pairwise GBDT** | LightGBM Re-Ranker Fusion | 11 pairwise interaction features, learned match probability | **0.8667** | **0.78151** (Best) |
+
+*\*Note: Model 1 was evaluated on local CV; to preserve daily submission limits, only our enhanced pipelines (Model 2 and Model 3) were submitted to Kaggle.*
 
 ---
 
 ## 3. Individual Contributions Breakdown
 
+* **R S Maneesh (2024449)** — *Group Representative*:
+  * Team lead and group coordination.
+  * Conducted Exploratory Data Analysis (EDA) on species distributions, identity frequencies, and class imbalance (noting that 99 leopard identities are singletons with only 1 photo).
+  * Built and benchmarked **Model 1** (Baseline Cosine Similarity k-NN with naive Rank-5 `new_individual`).
+  * Performed error analysis on Model 1 to show that failing to detect novel animals degraded the score to ~0.58.
+
 * **Raunak Mishra (2024455)**:
   * Repository configuration, pipeline modularization, and Git version control setup.
   * Formulated and implemented **Model 3**: engineered 11 pairwise interaction features (`s_max`, `s_mean`, `diff_to_top1`, `top1_top2_gap`, etc.) and trained the LightGBM classifier across 3 cross-validation folds.
   * Generated and verified the final competition submission achieving our peak score of **0.78151** on Kaggle.
-
-* **R S Maneesh (2024449)**:
-  * Conducted Exploratory Data Analysis (EDA) on species distributions, identity frequencies, and class imbalance (noting that 99 leopard identities are singletons with only 1 photo).
-  * Built and benchmarked **Model 1** (Baseline Cosine Similarity k-NN with naive Rank-5 `new_individual`).
-  * Performed error analysis on Model 1 to show that failing to detect novel animals degraded the score to ~0.58.
 
 * **Rishabh Khannawalia (2024463)**:
   * Designed the realistic open-set 3-fold cross-validation split that holds out 20% of identities entirely to simulate unseen `new_individual` test queries.
