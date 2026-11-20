@@ -9,8 +9,8 @@ This repository contains our team's complete, reproducible code and final submis
 
 | Name | Roll Number | Email | Role |
 | :--- | :---: | :--- | :--- |
-| **Raunak Mishra** (Group Representative) | **2024455** | raunak24455@iiitd.ac.in | Model 3 (GBDT Ranker), Pipeline Architecture, Notebook |
-| **R S Maneesh** | **2024449** | maneesh24449@iiitd.ac.in | Model 1 (Baseline k-NN), Exploratory Data Analysis |
+| **R S Maneesh** (Group Representative) | **2024449** | maneesh24449@iiitd.ac.in | Model 1 (Baseline k-NN), Exploratory Data Analysis |
+| **Raunak Mishra** | **2024455** | raunak24455@iiitd.ac.in | Model 3 (GBDT Ranker), Pipeline Architecture, Notebook |
 | **Rishabh Khannawalia** | **2024463** | rishabh24463@iiitd.ac.in | Open-Set Validation Protocol, Threshold Tuning |
 | **Shakti** | **2024519** | shakti24519@iiitd.ac.in | Viewpoint Analysis, Flank Penalty, Error Auditing |
 
