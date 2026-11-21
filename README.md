@@ -74,10 +74,60 @@ As required by the project instructions, we developed three distinct model versi
 
 ---
 
-## 4. Repository Structure
+## 4. Setup & Execution Guide
+
+### Prerequisites
+- **Python**: Version `3.11` is required (tested on Python `3.11.9`).
+- **Data & Environment Notice**: In compliance with course rules and repository size limits, the dataset (`data/`) and Python virtual environments (`.venv*`) are **not** committed to GitHub and must be set up locally.
+
+### Step 1: Environment Setup (Windows)
+Create and activate a virtual environment:
+```powershell
+python -m venv .venv311
+.venv311\Scripts\activate
+```
+
+Install the required dependencies:
+```powershell
+pip install -r requirements.txt
+```
+
+### Step 2: Expected Dataset Directory Structure
+Extract the competition dataset into the project root so the structure matches:
+```
+ML-Project3-Wildlife-ReID/
+└── data/
+    └── projectwild3/
+        ├── reid_student_data_main/
+        │   ├── train.csv                # Training sighting labels & metadata
+        │   ├── test.csv                 # Test query sightings
+        │   ├── miewid_ids.csv           # Sighting ID to embedding index mapping
+        │   ├── miewid_features.npy      # Precomputed 2,152-dim MiewID descriptors
+        │   └── sample_submission.csv    # Competition submission format reference
+        ├── sift_features_train.npz/     # Directory of local keypoints (optional)
+        └── sift_features_test.npz/      # Directory of local keypoints (optional)
+```
+
+### Step 3: Running the Standalone Pipeline
+To run the full end-to-end pipeline, evaluate cross-validation across all stages, and regenerate `submission.csv`:
+```powershell
+python run_pipeline.py
+```
+This produces `submission.csv` directly in the project root.
+
+### Step 4: Running the Notebook
+To interactively explore the three model progression stages:
+```powershell
+jupyter notebook Wildlife_ReID_Pipeline.ipynb
+```
+Launch the notebook directly from the project root. All relative paths automatically resolve against `data/projectwild3/reid_student_data_main/`.
+
+---
+
+## 5. Repository Structure
 
 ```
-RounakMishra03/ML-Project3-Wildlife-ReID/
+ML-Project3-Wildlife-ReID/
 ├── .gitignore                    # Ignores heavy .npy, .zip, venv, and scratch scripts
 ├── README.md                     # Clean, authentic student project overview
 ├── requirements.txt              # Standard permitted packages (numpy, pandas, scipy, scikit-learn, lightgbm)
@@ -88,7 +138,7 @@ RounakMishra03/ML-Project3-Wildlife-ReID/
 
 ---
 
-## 5. Course Rules Compliance Checklist
+## 6. Course Rules Compliance Checklist
 
 - [x] **No raw images used**: Strictly used the provided `miewid_features.npy` descriptors and metadata.
 - [x] **No deep learning frameworks**: No PyTorch, TensorFlow, Keras, or neural network layers.

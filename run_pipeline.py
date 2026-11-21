@@ -24,8 +24,10 @@ warnings.filterwarnings("ignore")
 SEED = 42
 np.random.seed(SEED)
 
-ROOT_DIR = Path("d:/P3- WILDLIFE RE ID/data")
-SUBMISSION_PATH = Path("d:/P3- WILDLIFE RE ID/submission.csv")
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATASET_ROOT = PROJECT_ROOT / "data" / "projectwild3"
+ROOT_DIR = DATASET_ROOT / "reid_student_data_main"
+SUBMISSION_PATH = PROJECT_ROOT / "submission.csv"
 
 t_start = time.time()
 print("=" * 75)
@@ -262,8 +264,8 @@ for sp in species_list:
 
 # ─── 6. SIFT Re-ranking Check ────────────────────────────────────────────────
 print("\n[SECTION 6] Checking SIFT features availability...")
-sift_train_path = ROOT_DIR / "sift_features_train.npz"
-sift_test_path  = ROOT_DIR / "sift_features_test.npz"
+sift_train_path = DATASET_ROOT / "sift_features_train.npz"
+sift_test_path  = DATASET_ROOT / "sift_features_test.npz"
 HAS_SIFT = sift_train_path.exists() and sift_test_path.exists()
 if HAS_SIFT:
     print("  * SIFT files found: enabling keypoint verification.")
