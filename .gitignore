@@ -1,4 +1,4 @@
-# Python virtual environment
+# Python virtual environments
 venv/
 .venv/
 .venv*/
@@ -14,18 +14,30 @@ cache/
 *.npy
 *.npz
 
-# Temporary / test files
+# Scratch & exploratory scripts
 PASTE_GOOGLE_DOC_HERE.txt
 check_*.py
 test_*.py
+explore_*.py
+benchmark_*.py
+sweep_*.py
+eval_*.py
+generate_*.py
+blend_*.py
 fast_experiments.py
 tune_*.py
 cv_*.py
-generate_notebook.py
 eda.py
+reid_features_engine.py
+gbdt_pipeline_core.py
 wildlife_reid_pipeline.py
-submission_*_*.csv
 PROJECT_REPORT.md
+
+# Intermediate experiment submissions
+submission_v*.csv
+submission_clean*.csv
+submission_ensemble*.csv
+submission_full*.csv
 
 # Checkpoints / IDE
 .vscode/
