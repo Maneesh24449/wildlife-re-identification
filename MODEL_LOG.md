@@ -26,7 +26,6 @@ The runner reports **0.8643** as backbone development CV and **0.84209** as the 
 | Wider raw cosine, cross-view, and local descriptor retrieval | Candidate recall improved. The newly found true identities stayed outside the final five. | Keep the existing candidate pool. |
 | VLAD scoring and hyena transfer | **+0.00012** and **+0.00082** weighted MAP@5, below the **+0.002** promotion threshold. | Keep the 0.84209 variant. |
 
-## What to explain in the demo
 
 - **Why we split by encounter.** Random image splits can put near-duplicate camera-trap frames on both sides. For known animals we hold out whole encounters, and for novel animals we hold out whole identities.
 - **Why we moved SIFT earlier.** On 3,030 leopard query-fold rows, 199 known queries missed both shortlists and another 96 had the true identity shortlisted but outside the final five. Verifying before the cut gave those shortlisted identities a chance to move up.
