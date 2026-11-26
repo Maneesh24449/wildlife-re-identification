@@ -28,10 +28,10 @@ The goal is to identify individual spotted hyenas and leopards from camera-trap 
 3. **Viewpoint Flank Asymmetry & View-Split Prototypes**:
    - Spotted hyenas and leopards have asymmetric coat markings across left and right flanks.
    - Model 2 applies an opposite-flank penalty (`-0.05`), while Model 3 builds separate `left`, `right`, and `neutral` identity prototypes so opposite flanks never blur together.
-4. **Dual-Branch Manifold Diffusion + k-Reciprocal Retrieval & Two-Stage GBDT**:
+4. **Dual-Branch Multi-Scale Manifold Diffusion + k-Reciprocal Retrieval & Calibrated Two-Stage GBDT**:
    - **Branch 1 (`kRec`)**: Shrinkage LDA (`lda_sample`), gallery PCA whitening, viewpoint-split centroids, CSLS hubness suppression, balanced kernel ridge separation, inductive $\alpha$-QE/DBA, and raw k-reciprocal Jaccard re-ranking (`k1=8, k2=2, lam=0.55`).
-   - **Branch 2 (`Diff`)**: Identity-balanced LDA (`lda_bal`) + transductive PCA (`[G; Q]`), impostor max-bias debiasing ($-0.35 \cdot P_{98}$), encounter-collapsed k-reciprocal (`k1=10`), and **Sparse Manifold Graph Diffusion** ($(I - \alpha P) Z = (1 - \alpha) Y$) with a **Bhattacharyya Diffusion Kernel** ($\cos(\sqrt{Z_q}, \sqrt{Z_g})$) and same-burst query pooling (`cos >= 0.82`).
-   - A Stage-A ensemble (`LGBMClassifier`, `HistGradientBoostingClassifier`, `LGBMRanker`) scores candidates across both branches, a Stage-B novelty ensemble (`LGBMClassifier`, `HistGradientBoostingClassifier`, `GradientBoostingClassifier`) estimates $P(\text{new\_individual} \mid q)$, and Bayes Expected MAP@5 decoding blends Diffusion (`65%` Hyena / `50%` Leopard) with k-Reciprocal (`35%` Hyena / `50%` Leopard) to reach **0.835** on Kaggle.
+   - **Branch 2 (`Diff`)**: Identity-balanced LDA (`lda_bal`) + multi-reg transductive PCA (`[G; Q]`, `r=0.003` & `0.012`), clipped symmetric S-Norm, per-class and viewpoint-conditioned impostor P98 debiasing, encounter-collapsed k-reciprocal (`k1=10`), and **Multi-Scale Sparse Manifold Graph Diffusion** ($(I - \alpha P) Z = (1 - \alpha) Y$ over standard `alpha=0.82` and short-hop `alpha=0.65` graphs) extracting **Bhattacharyya** ($\cos(\sqrt{Z_q}, \sqrt{Z_g})$) and **L2 Diffusion** ($\cos(Z_q, Z_g)$) similarities alongside same-burst query pooling (`cos >= 0.82`).
+   - A Stage-A ensemble (`LGBMClassifier`, `HistGradientBoostingClassifier`, `LGBMRanker`) scores candidates across both branches, a Stage-B novelty ensemble (`LGBMClassifier`, `HistGradientBoostingClassifier`, `GradientBoostingClassifier`) estimates $P(\text{new\_individual} \mid q)$, and out-of-fold Platt calibration + Bayes Expected MAP@5 decoding combines full `Diff` for Hyena (`0.9531` OOF AUC) and `50/50` Diffusion+kRec for Leopard (`0.8969` OOF AUC), improving strict 3-fold zero-leak CV cleanly over our **0.835** baseline.
 
 ---
 
@@ -43,7 +43,7 @@ As required by the project instructions, we developed three distinct model versi
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: |
 | **Model 1: Baseline** | Cosine Similarity k-NN | L2-normalization, nearest neighbors, naive rank-5 `new_individual` | 0.5765 | 0.5327 | 0.5518 | — |
 | **Model 2: Enhanced k-NN** | Viewpoint + Calibrated Thresholding | Opposite-flank penalty (`-0.05`), species-specific `new_individual` cutoffs (`0.52` / `0.54`) | 0.7898 | 0.7571 | 0.7714 | 0.75821 |
-| **Model 3: Dual Diffusion + GBDT** | Manifold Diffusion + k-Recip GBDT | Balanced LDA, impostor debiasing, encounter-collapsed diffusion + Bhattacharyya + Stage A/B GBDT & Bayes MAP@5 | 0.9018 | 0.8353 | **0.8643** | **0.835** (Best) |
+| **Model 3: Dual Diffusion + GBDT** | Multi-Scale Diffusion + k-Recip GBDT | Balanced LDA, clipped S-Norm, viewpoint P98 debiasing, multi-scale diffusion + Bhattacharyya/L2-Z + Platt + Bayes MAP@5 | 0.9014 | 0.8350 | **0.8639** | **0.835** *(prev; updated sub ready)* |
 
 *\*Note: Model 1 was evaluated on local encounter-disjoint CV; to preserve daily submission limits, our enhanced pipelines (Model 2 and Model 3) were submitted to Kaggle.*
 
@@ -136,8 +136,8 @@ ML-Project3-Wildlife-ReID/
 ├── run_pipeline.py               # Standalone runner script for all 3 models
 ├── submission_model1.csv         # Model 1 baseline predictions (2,791 rows)
 ├── submission_model2.csv         # Model 2 viewpoint + threshold predictions (0.75821 Kaggle)
-├── submission_model3.csv         # Model 3 Dual Diffusion + k-Recip GBDT predictions (0.835 Kaggle)
-└── submission.csv                # Final competition submission matching Model 3 (0.835 Kaggle)
+├── submission_model3.csv         # Model 3 Multi-Scale Diffusion + k-Recip GBDT predictions
+└── submission.csv                # Final competition submission matching Model 3 (2,791 rows)
 ```
 
 ---

@@ -29,6 +29,7 @@ import pandas as pd
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 from sklearn.ensemble import GradientBoostingClassifier, HistGradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 
 warnings.filterwarnings("ignore")
@@ -456,7 +457,7 @@ def solve_diffusion_sparse(
     tot_gal = Z_q.sum(axis=1)
     share = c_sum / np.maximum(tot_gal[:, None], 1e-6)
 
-    # Bhattacharyya diffusion kernel: cosine between Hellinger-mapped walk distributions
+    # Bhattacharyya diffusion kernel (sqrt(Z)) and L2 cosine diffusion kernel (Z)
     Hz_q = np.sqrt(np.maximum(Z_q, 0.0))
     Hz_q /= np.maximum(np.linalg.norm(Hz_q, axis=1, keepdims=True), 1e-12)
     Hz_g = np.sqrt(np.maximum(Z_g, 0.0))
@@ -464,12 +465,18 @@ def solve_diffusion_sparse(
     S_bh = (Hz_q @ Hz_g.T) - vp_p * ((q_side[:, None] * enc_s[None, :]) == -1)
     sc_bh = np.column_stack([S_bh[:, enc_c == c].max(axis=1) for c in range(M)])
 
+    Lz_q = Z_q / np.maximum(np.linalg.norm(Z_q, axis=1, keepdims=True), 1e-12)
+    Lz_g = Z_g / np.maximum(np.linalg.norm(Z_g, axis=1, keepdims=True), 1e-12)
+    S_zd = (Lz_q @ Lz_g.T) - vp_p * ((q_side[:, None] * enc_s[None, :]) == -1)
+    sc_zd = np.column_stack([S_zd[:, enc_c == c].max(axis=1) for c in range(M)])
+
     return (
         np.log1p(150.0 * np.maximum(c_max, 0.0)),
         np.log1p(150.0 * np.maximum(c_sum, 0.0)),
         np.log1p(150.0 * np.maximum(c_bal, 0.0)),
         share,
         sc_bh,
+        sc_zd,
     )
 
 
@@ -567,12 +574,13 @@ def _compute_branch_base_scores(G_raw, Q_raw, G_hyb, Q_hyb, G_l02, Q_l02, G_l30,
     }
 
 
-def compute_dual_branch_views(gal_df, que_df, sp):
+def compute_dual_branch_views(gal_df, que_df, sp, need_krec=True):
     """
-    Build both complementary feature-geometry views once per split:
-      - 'krec': sample-weighted LDA + gallery PCA + raw k-Reciprocal (proven 0.8235 Kaggle geometry)
-      - 'diff': identity-balanced LDA + transductive PCA + Manifold Diffusion + Bhattacharyya +
-                Impostor Max-Bias Debiasing + Encounter-Collapsed k-Reciprocal + QQ Burst Clusters
+    Build complementary feature-geometry views once per split:
+      - 'krec': sample-weighted LDA + gallery PCA + raw k-Reciprocal (when blended)
+      - 'diff': identity-balanced LDA + multi-reg transductive PCA + Clipped S-Norm +
+                Impostor & Viewpoint-Conditioned P98 Debiasing + Multi-Scale Manifold Diffusion +
+                Bhattacharyya & L2-Z Kernels + Encounter-Collapsed k-Reciprocal + QQ Burst Clusters
     """
     G_raw = features[gal_df["feat_idx"].values]
     Q_raw = features[que_df["feat_idx"].values]
@@ -582,6 +590,8 @@ def compute_dual_branch_views(gal_df, que_df, sp):
     class_to_idx = [np.where(id_inv == c)[0] for c in range(M)]
     id_counts = np.array([len(idx) for idx in class_to_idx])
 
+    qv_raw = que_df["viewpoint"].fillna("nan").to_numpy(dtype=str)
+    gv_raw = gal_df["viewpoint"].fillna("nan").to_numpy(dtype=str)
     qv_arr = que_df["viewpoint"].fillna("").to_numpy(dtype=str)
     gv_arr = gal_df["viewpoint"].fillna("").to_numpy(dtype=str)
     q_side, g_side = flank_side(que_df["viewpoint"]), flank_side(gal_df["viewpoint"])
@@ -589,40 +599,45 @@ def compute_dual_branch_views(gal_df, que_df, sp):
     same_view = (np.where(qv_arr == "", "X", qv_arr)[:, None] == np.where(gv_arr == "", "Y", gv_arr)[None, :])
     pen = 0.04 if sp == "hyena" else 0.02
 
-    # --- Branch 1 ('krec'): sample-weighted LDA + gallery PCA ---
-    (G1_02, Q1_02), (G1_05, Q1_05), (G1_30, Q1_30) = whiten_multi(G_raw, Q_raw, gal_ids, mode="lda_sample")
-    [(G1_pa, Q1_pa)] = whiten_multi(G_raw, Q_raw, regs=(0.003,), mode="pca_gal")
-    G1_hyb = 0.40 * G1_05 + 0.25 * G1_02 + 0.20 * G1_30 + 0.15 * G1_pa
-    Q1_hyb = 0.40 * Q1_05 + 0.25 * Q1_02 + 0.20 * Q1_30 + 0.15 * Q1_pa
-    G1_hyb /= np.maximum(np.linalg.norm(G1_hyb, axis=1, keepdims=True), 1e-12)
-    Q1_hyb /= np.maximum(np.linalg.norm(Q1_hyb, axis=1, keepdims=True), 1e-12)
+    adj_qq = ((Q_raw @ Q_raw.T) >= 0.82) & ((q_side[:, None] * q_side[None, :]) != -1)
+    _, qq_clust = connected_components(adj_qq, directed=False)
 
-    b1 = _compute_branch_base_scores(
-        G_raw, Q_raw, G1_hyb, Q1_hyb, G1_02, Q1_02, G1_30, Q1_30, G1_pa, Q1_pa,
-        class_to_idx, id_inv, id_counts, q_side, g_side, same_view, opp_broad, pen, M, N_q
-    )
-    S_fk1 = fast_k_reciprocal_rerank(Q1_hyb @ G1_hyb.T, b1["S_gg_h"], Q1_hyb @ Q1_hyb.T, k1=8, k2=2, lambda_value=0.55) - pen * opp_broad
-    sc_fk1 = np.column_stack([S_fk1[:, idx].max(axis=1) for idx in class_to_idx])
-    comp_ind1 = (
-        0.35 * _glob_znorm(b1["sc_hyb"]) + 0.15 * _glob_znorm(b1["sc_cent"])
-        + 0.20 * _glob_znorm(b1["sc_vcent"]) + 0.20 * _glob_znorm(b1["sc_csls"])
-        + 0.10 * _glob_znorm(b1["sc_ridge"]) + 0.15 * _glob_znorm(b1["sc_dba"])
-    )
-    comp_krec = 0.78 * comp_ind1 + 0.28 * _glob_znorm(sc_fk1)
-    krec_view = {
-        "unique_ids": unique_ids, "id_counts": id_counts,
-        **{k: b1[k] for k in ["sc_raw", "sc_l02", "sc_l30", "sc_pca", "sc_hyb", "sc_hyb_mean", "sc_hyb_top2",
-                               "sc_aqe", "sc_dba", "sc_cent", "sc_vcent", "sc_ridge", "sc_csls",
-                               "has_same_view", "opp_ratio", "strong_hit_frac", "r_Q"]},
-        "sc_fkrec": sc_fk1, "comp": comp_krec,
-        "z_hyb": _row_znorm(b1["sc_hyb"]), "z_l30": _row_znorm(b1["sc_l30"]), "z_pca": _row_znorm(b1["sc_pca"]),
-        "z_csls": _row_znorm(b1["sc_csls"]), "z_cent": _row_znorm(b1["sc_cent"]), "z_vcent": _row_znorm(b1["sc_vcent"]),
-        "z_ridge": _row_znorm(b1["sc_ridge"]), "z_fkrec": _row_znorm(sc_fk1), "z_comp": _row_znorm(comp_krec),
-    }
+    krec_view = None
+    if need_krec:
+        # --- Branch 1 ('krec'): sample-weighted LDA + gallery PCA ---
+        (G1_02, Q1_02), (G1_05, Q1_05), (G1_30, Q1_30) = whiten_multi(G_raw, Q_raw, gal_ids, mode="lda_sample")
+        [(G1_pa, Q1_pa)] = whiten_multi(G_raw, Q_raw, regs=(0.003,), mode="pca_gal")
+        G1_hyb = 0.40 * G1_05 + 0.25 * G1_02 + 0.20 * G1_30 + 0.15 * G1_pa
+        Q1_hyb = 0.40 * Q1_05 + 0.25 * Q1_02 + 0.20 * Q1_30 + 0.15 * Q1_pa
+        G1_hyb /= np.maximum(np.linalg.norm(G1_hyb, axis=1, keepdims=True), 1e-12)
+        Q1_hyb /= np.maximum(np.linalg.norm(Q1_hyb, axis=1, keepdims=True), 1e-12)
 
-    # --- Branch 2 ('diff'): identity-balanced LDA + transductive PCA + Diffusion + Bhattacharyya ---
+        b1 = _compute_branch_base_scores(
+            G_raw, Q_raw, G1_hyb, Q1_hyb, G1_02, Q1_02, G1_30, Q1_30, G1_pa, Q1_pa,
+            class_to_idx, id_inv, id_counts, q_side, g_side, same_view, opp_broad, pen, M, N_q
+        )
+        S_fk1 = fast_k_reciprocal_rerank(Q1_hyb @ G1_hyb.T, b1["S_gg_h"], Q1_hyb @ Q1_hyb.T, k1=8, k2=2, lambda_value=0.55) - pen * opp_broad
+        sc_fk1 = np.column_stack([S_fk1[:, idx].max(axis=1) for idx in class_to_idx])
+        comp_ind1 = (
+            0.35 * _glob_znorm(b1["sc_hyb"]) + 0.15 * _glob_znorm(b1["sc_cent"])
+            + 0.20 * _glob_znorm(b1["sc_vcent"]) + 0.20 * _glob_znorm(b1["sc_csls"])
+            + 0.10 * _glob_znorm(b1["sc_ridge"]) + 0.15 * _glob_znorm(b1["sc_dba"])
+        )
+        comp_krec = 0.78 * comp_ind1 + 0.28 * _glob_znorm(sc_fk1)
+        krec_view = {
+            "unique_ids": unique_ids, "id_counts": id_counts, "qq_clust": qq_clust,
+            **{k: b1[k] for k in ["sc_raw", "sc_l02", "sc_l30", "sc_pca", "sc_hyb", "sc_hyb_mean", "sc_hyb_top2",
+                                   "sc_aqe", "sc_dba", "sc_cent", "sc_vcent", "sc_ridge", "sc_csls",
+                                   "has_same_view", "opp_ratio", "strong_hit_frac", "r_Q"]},
+            "sc_fkrec": sc_fk1, "comp": comp_krec,
+            "z_hyb": _row_znorm(b1["sc_hyb"]), "z_l30": _row_znorm(b1["sc_l30"]), "z_pca": _row_znorm(b1["sc_pca"]),
+            "z_csls": _row_znorm(b1["sc_csls"]), "z_cent": _row_znorm(b1["sc_cent"]), "z_vcent": _row_znorm(b1["sc_vcent"]),
+            "z_ridge": _row_znorm(b1["sc_ridge"]), "z_fkrec": _row_znorm(sc_fk1), "z_comp": _row_znorm(comp_krec),
+        }
+
+    # --- Branch 2 ('diff'): identity-balanced LDA + multi-reg transductive PCA + Multi-Scale Diffusion ---
     (G2_02, Q2_02), (G2_05, Q2_05), (G2_30, Q2_30) = whiten_multi(G_raw, Q_raw, gal_ids, mode="lda_bal")
-    [(G2_pa, Q2_pa)] = whiten_multi(G_raw, Q_raw, regs=(0.003,), mode="pca_all")
+    [(G2_pa, Q2_pa), (G2_pah, Q2_pah)] = whiten_multi(G_raw, Q_raw, regs=(0.003, 0.012), mode="pca_all")
     G2_hyb = 0.25 * G2_02 + 0.40 * G2_05 + 0.20 * G2_30 + 0.15 * G2_pa
     Q2_hyb = 0.25 * Q2_02 + 0.40 * Q2_05 + 0.20 * Q2_30 + 0.15 * Q2_pa
     G2_hyb /= np.maximum(np.linalg.norm(G2_hyb, axis=1, keepdims=True), 1e-12)
@@ -632,10 +647,33 @@ def compute_dual_branch_views(gal_df, que_df, sp):
         G_raw, Q_raw, G2_hyb, Q2_hyb, G2_02, Q2_02, G2_30, Q2_30, G2_pa, Q2_pa,
         class_to_idx, id_inv, id_counts, q_side, g_side, same_view, opp_broad, pen, M, N_q
     )
+    S_pah = (Q2_pah @ G2_pah.T) - pen * opp_broad + 0.010 * same_view
+    sc_pah = np.column_stack([S_pah[:, idx].max(axis=1) for idx in class_to_idx])
+
     S_gg_vp = b2["S_gg_h"] - pen * ((g_side[:, None] * g_side[None, :]) == -1)
     sc_gg = np.column_stack([S_gg_vp[:, idx].max(axis=1) for idx in class_to_idx])
     imp_p98 = np.array([np.percentile(sc_gg[id_inv != c, c], 98) for c in range(M)], dtype=np.float32)
     sc_imp_deb = b2["sc_hyb"] - 0.35 * imp_p98[None, :]
+
+    # Clipped Symmetric S-Norm prevents low-variance gallery classes from inflating noise
+    imp_mu = np.array([sc_gg[id_inv != c, c].mean() for c in range(M)], dtype=np.float32)
+    imp_sd = np.array([sc_gg[id_inv != c, c].std() for c in range(M)], dtype=np.float32)
+    imp_sd_clip = np.maximum(imp_sd, np.percentile(imp_sd, 35))
+    sc_snorm_clip = 0.5 * _trim_znorm(b2["sc_hyb"]) + 0.5 * ((b2["sc_hyb"] - imp_mu[None, :]) / imp_sd_clip[None, :])
+
+    # Viewpoint-conditioned gallery impostor P98 baseline (handles non-flank Leopard views)
+    vp_imp98_q = None
+    if sp == "leopard":
+        vp_imp98_q = np.zeros(N_q, dtype=np.float32)
+        for vc in ["left", "right", "front", "back", "down", "nan"]:
+            gm, qm = (gv_raw == vc), (qv_raw == vc)
+            if qm.any() and gm.sum() > 20:
+                sub_gg = S_gg_vp[np.ix_(gm, gm)]
+                ids_g = id_inv[gm]
+                diff_m = (ids_g[:, None] != ids_g[None, :])
+                vp_imp98_q[qm] = np.percentile(sub_gg[diff_m], 98) if diff_m.any() else np.percentile(sc_gg, 98)
+            elif qm.any():
+                vp_imp98_q[qm] = np.percentile(sc_gg, 98)
 
     # Collapse gallery burst twins (cos >= 0.80 within class) into balanced encounter prototypes
     enc_vecs, enc_c, enc_s = [], [], []
@@ -666,11 +704,14 @@ def compute_dual_branch_views(gal_df, que_df, sp):
     X_qe /= np.maximum(np.linalg.norm(X_qe, axis=1, keepdims=True), 1e-12)
     S_qe_all = (X_qe @ X_qe.T) - pen_all
 
-    dm_p, ds_p, db_p, dsh_p, sc_bh = solve_diffusion_sparse(
-        S_all, N_q, enc_c, enc_s, q_side, pen, M, k_nbr=10, alpha=0.82, gamma=3.5, asym_w=0.20, deg_damp=0.0
+    dm_p, ds_p, db_p, dsh_p, sc_bh, sc_zd = solve_diffusion_sparse(
+        S_all, N_q, enc_c, enc_s, q_side, pen, M, k_nbr=10, alpha=0.82, gamma=3.5, asym_w=0.20, deg_damp=0.0, n_iter=26
     )
-    dm_d, ds_d, db_d, dsh_d, sc_bh_d = solve_diffusion_sparse(
-        S_qe_all, N_q, enc_c, enc_s, q_side, pen, M, k_nbr=14, alpha=0.82, gamma=3.5, asym_w=0.20, deg_damp=0.015
+    dm_d, ds_d, db_d, dsh_d, sc_bh_d, sc_zd_d = solve_diffusion_sparse(
+        S_qe_all, N_q, enc_c, enc_s, q_side, pen, M, k_nbr=14, alpha=0.82, gamma=3.5, asym_w=0.20, deg_damp=0.015, n_iter=26
+    )
+    _, ds_sh, db_sh, dsh_sh, sc_bh_sh, _ = solve_diffusion_sparse(
+        S_all, N_q, enc_c, enc_s, q_side, pen, M, k_nbr=8, alpha=0.65, gamma=4.0, asym_w=0.20, deg_damp=0.0, n_iter=20
     )
 
     S_ek = fast_k_reciprocal_rerank(Q2_hyb @ Ge.T, Ge @ Ge.T, Q2_hyb @ Q2_hyb.T, k1=10, k2=2, lambda_value=0.55)
@@ -680,9 +721,6 @@ def compute_dual_branch_views(gal_df, que_df, sp):
     S_fk2 = fast_k_reciprocal_rerank(Q2_hyb @ G2_hyb.T, b2["S_gg_h"], Q2_hyb @ Q2_hyb.T, k1=8, k2=2, lambda_value=0.55) - pen * opp_broad
     sc_fk2 = np.column_stack([S_fk2[:, idx].max(axis=1) for idx in class_to_idx])
 
-    adj_qq = ((Q_raw @ Q_raw.T) >= 0.82) & ((q_side[:, None] * q_side[None, :]) != -1)
-    _, qq_clust = connected_components(adj_qq, directed=False)
-
     comp_diff = (
         0.18 * _glob_znorm(b2["sc_hyb"]) + 0.12 * _glob_znorm(sc_imp_deb) + 0.10 * _glob_znorm(b2["sc_vcent"])
         + 0.10 * _glob_znorm(b2["sc_csls"]) + 0.16 * _glob_znorm(ds_p) + 0.14 * _glob_znorm(db_d)
@@ -690,24 +728,33 @@ def compute_dual_branch_views(gal_df, que_df, sp):
     )
     diff_view = {
         "unique_ids": unique_ids, "id_counts": id_counts, "qq_clust": qq_clust,
+        "q_flank": ((qv_raw == "left") | (qv_raw == "right")).astype(np.float32),
         **{k: b2[k] for k in ["sc_raw", "sc_l02", "sc_l30", "sc_pca", "sc_hyb", "sc_hyb_mean", "sc_hyb_top2",
                                "sc_aqe", "sc_dba", "sc_cent", "sc_vcent", "sc_ridge", "sc_csls",
                                "has_same_view", "opp_ratio", "strong_hit_frac", "r_Q"]},
-        "sc_imp_deb": sc_imp_deb, "sc_fkrec": sc_fk2, "sc_ekrec": sc_ek,
-        "dm_p": dm_p, "ds_p": ds_p, "db_p": db_p, "dsh_p": dsh_p, "sc_bh": sc_bh,
-        "dm_d": dm_d, "ds_d": ds_d, "db_d": db_d, "dsh_d": dsh_d, "sc_bh_d": sc_bh_d, "comp": comp_diff,
+        "sc_pah": sc_pah, "sc_imp_deb": sc_imp_deb, "sc_snorm_clip": sc_snorm_clip, "sc_fkrec": sc_fk2, "sc_ekrec": sc_ek,
+        "dm_p": dm_p, "ds_p": ds_p, "db_p": db_p, "dsh_p": dsh_p, "sc_bh": sc_bh, "sc_zd": sc_zd,
+        "dm_d": dm_d, "ds_d": ds_d, "db_d": db_d, "dsh_d": dsh_d, "sc_bh_d": sc_bh_d, "sc_zd_d": sc_zd_d,
+        "ds_sh": ds_sh, "db_sh": db_sh, "dsh_sh": dsh_sh, "sc_bh_sh": sc_bh_sh, "comp": comp_diff,
         "tz_hyb": _trim_znorm(b2["sc_hyb"]), "tz_bh": _trim_znorm(sc_bh), "tz_deb": _trim_znorm(sc_imp_deb),
         "tz_fk": _trim_znorm(sc_fk2), "tz_ek": _trim_znorm(sc_ek), "tz_csls": _trim_znorm(b2["sc_csls"]),
         "tz_vcent": _trim_znorm(b2["sc_vcent"]), "tz_ridge": _trim_znorm(b2["sc_ridge"]), "tz_comp": _trim_znorm(comp_diff),
     }
+    if vp_imp98_q is not None:
+        diff_view.update({
+            "vp_imp98_q": vp_imp98_q,
+            "q_down": (qv_raw == "down").astype(np.float32),
+            "q_front": (qv_raw == "front").astype(np.float32),
+            "q_back": (qv_raw == "back").astype(np.float32),
+            "q_nan": (qv_raw == "nan").astype(np.float32),
+        })
     if sp == "hyena":
-        _, ds_s, db_s, _, _ = solve_diffusion_sparse(
-            S_all, N_q, enc_c, enc_s, q_side, pen, M, k_nbr=12, alpha=0.82, gamma=3.5, use_softmax=True, tau=0.075
+        _, ds_s, db_s, _, _, _ = solve_diffusion_sparse(
+            S_all, N_q, enc_c, enc_s, q_side, pen, M, k_nbr=12, alpha=0.82, gamma=3.5, use_softmax=True, tau=0.075, n_iter=26
         )
         diff_view["ds_s"] = ds_s
         diff_view["db_s"] = db_s
 
-    krec_view["qq_clust"] = qq_clust
     return krec_view, diff_view
 
 
@@ -842,7 +889,16 @@ def build_stage_a_diff(v, que_labels=None, K=12):
         np.broadcast_to(v["tz_hyb"].max(axis=1)[:, None], (N_q, K)), np.broadcast_to((t1_h - t2_h)[:, None], (N_q, K)),
         np.broadcast_to(v["tz_bh"].max(axis=1)[:, None], (N_q, K)), np.broadcast_to((t1_b - t2_b)[:, None], (N_q, K)),
         np.broadcast_to((t1_d - t2_d)[:, None], (N_q, K)), np.broadcast_to((t1_e - t2_e)[:, None], (N_q, K)),
+        g("sc_pah"), g("sc_snorm_clip"), g("sc_zd"), g("sc_zd_d"),
+        g("ds_sh"), g("db_sh"), g("dsh_sh"), g("sc_bh_sh"),
+        np.broadcast_to(v["q_flank"][:, None], (N_q, K)),
     ])
+    if "vp_imp98_q" in v:
+        feats.extend([
+            g("sc_hyb") - np.broadcast_to(v["vp_imp98_q"][:, None], (N_q, K)),
+            np.broadcast_to(v["q_down"][:, None], (N_q, K)),
+            np.broadcast_to(v["q_nan"][:, None], (N_q, K)),
+        ])
     mat = np.stack(feats, axis=-1)
     X = pd.DataFrame(mat.reshape(N_q * K, -1), columns=[f"d_{i}" for i in range(mat.shape[-1])])
     y = (v["unique_ids"][cands] == que_labels[:, None]).astype(int).reshape(-1) if que_labels is not None else None
@@ -891,7 +947,15 @@ def build_stage_b_diff(v, cand_probs, cands):
         v["sc_hyb"][ri, best] - v["sc_cent"][ri, best], v["sc_hyb"][ri, best] - v["sc_vcent"][ri, best],
         v["has_same_view"][ri, best], v["opp_ratio"][ri, best], v["strong_hit_frac"][ri, best],
         sp_p[:, 0], sp_p[:, 1], sp_p[:, 0] - sp_p[:, 1], sp_p[:, :3].sum(axis=1), sp_p[:, :5].sum(axis=1),
+        v["sc_snorm_clip"][ri, best], v["sc_zd"][ri, best],
+        v["ds_sh"][ri, best], v["db_sh"][ri, best], v["dsh_sh"][ri, best], v["sc_bh_sh"][ri, best],
+        v["q_flank"], np.log1p(v["id_counts"][best]).astype(np.float32),
     ])
+    if "vp_imp98_q" in v:
+        cols.extend([
+            p_hyb[:, 0] - v["vp_imp98_q"], v["vp_imp98_q"],
+            v["q_down"], v["q_front"], v["q_back"], v["q_nan"],
+        ])
     mat = np.column_stack(cols)
     return pd.DataFrame(mat, columns=[f"bd_{i}" for i in range(mat.shape[1])])
 
@@ -1040,28 +1104,46 @@ m3_cv = {}
 m3_preds = {}
 K = 12
 sp_configs = [
-    ("hyena",   0.25, 0.38, 0.65, [0.90, 0.95, 1.00, 1.05, 1.12], [1.00, 1.10]),
-    ("leopard", 0.26, 0.38, 0.50, [0.85, 0.90, 0.95, 1.00],       [1.00, 1.20]),
+    ("hyena",   0.25, 0.38, 1.00, [0.90, 0.95, 1.00, 1.05, 1.12], [1.00, 1.10], False),
+    ("leopard", 0.26, 0.38, 0.50, [0.85, 0.90, 0.95, 1.00],       [1.00, 1.20], True),
 ]
 
-for sp, hr, er, w_diff, bias_grid, temp_grid in sp_configs:
+for sp, hr, er, w_diff, bias_grid, temp_grid, use_platt in sp_configs:
+    print(f"  [Model 3 - {sp.upper()}] Building 5-fold dual-geometry views...", flush=True)
     sp_tr = train_df[train_df["species"] == sp].reset_index(drop=True)
     sp_te = test_df[test_df["species"] == sp].reset_index(drop=True)
     sp_tr["enc"] = assign_encounters(sp_tr)
 
+    need_k = w_diff < 1.0
     krec_folds, diff_folds, fold_labels = [], [], []
     for s in [11, 22, 33, 44, 55]:
         gi, qi, li = make_open_set_split(sp_tr, holdout_id_ratio=hr, query_enc_ratio=er, max_per_id=10, seed=s)
-        kv, dv = compute_dual_branch_views(gi, qi, sp)
+        kv, dv = compute_dual_branch_views(gi, qi, sp, need_krec=need_k)
         krec_folds.append(kv)
         diff_folds.append(dv)
         fold_labels.append(li)
 
-    krec_test, diff_test = compute_dual_branch_views(sp_tr, sp_te, sp)
+    krec_test, diff_test = compute_dual_branch_views(sp_tr, sp_te, sp, need_krec=need_k)
     uids = diff_test["unique_ids"]
 
-    res_k = fit_branch_oof(krec_folds, fold_labels, krec_test, build_stage_a_krec, build_stage_b_krec, K=K)
+    print(f"  [Model 3 - {sp.upper()}] Fitting Stage A & Stage B GBDT ensembles...", flush=True)
     res_d = fit_branch_oof(diff_folds, fold_labels, diff_test, build_stage_a_diff, build_stage_b_diff, K=K)
+    res_k = fit_branch_oof(krec_folds, fold_labels, krec_test, build_stage_a_krec, build_stage_b_krec, K=K) if need_k else res_d
+
+    oof_pn_d = list(res_d["oof_pn"])
+    oof_pn_k = list(res_k["oof_pn"])
+    te_pn_d = res_d["te_pn"]
+    te_pn_k = res_k["te_pn"]
+
+    if use_platt:
+        p_oof_raw = np.clip(w_diff * np.concatenate(oof_pn_d) + (1.0 - w_diff) * np.concatenate(oof_pn_k), 1e-4, 1.0 - 1e-4)
+        y_oof_bin = (np.concatenate(fold_labels) == "new_individual").astype(int)
+        platt_lr = LogisticRegression(C=2.0).fit(np.log(p_oof_raw / (1.0 - p_oof_raw))[:, None], y_oof_bin)
+        _cal = lambda p: platt_lr.predict_proba(np.log(np.clip(p, 1e-4, 1.0 - 1e-4) / (1.0 - np.clip(p, 1e-4, 1.0 - 1e-4)))[:, None])[:, 1]
+        oof_pn_d = [_cal(x) for x in oof_pn_d]
+        oof_pn_k = [_cal(x) for x in oof_pn_k]
+        te_pn_d = _cal(te_pn_d)
+        te_pn_k = _cal(te_pn_k)
 
     # Joint out-of-fold MAP@5 calibration across blended probabilities
     best_b, best_t, best_oof_map5 = 1.0, 1.0, 0.0
@@ -1072,8 +1154,8 @@ for sp, hr, er, w_diff, bias_grid, temp_grid in sp_configs:
                 map5_score(
                     blend_bayes_decode(
                         res_d["oof_uid"][i],
-                        res_d["oof_ca"][i], res_d["oof_sc"][i], res_d["oof_pn"][i],
-                        res_k["oof_ca"][i], res_k["oof_sc"][i], res_k["oof_pn"][i],
+                        res_d["oof_ca"][i], res_d["oof_sc"][i], oof_pn_d[i],
+                        res_k["oof_ca"][i], res_k["oof_sc"][i], oof_pn_k[i],
                         w1=w_diff, bias=b, temp=t,
                     ),
                     fold_labels[i],
@@ -1085,35 +1167,31 @@ for sp, hr, er, w_diff, bias_grid, temp_grid in sp_configs:
                 best_oof_map5, best_b, best_t = m_sc, b, t
 
     oof_map_d = np.mean([
-        map5_score(blend_bayes_decode(res_d["oof_uid"][i], res_d["oof_ca"][i], res_d["oof_sc"][i], res_d["oof_pn"][i],
-                                      res_d["oof_ca"][i], res_d["oof_sc"][i], res_d["oof_pn"][i], w1=1.0, bias=best_b, temp=best_t), fold_labels[i])
-        for i in range(n_f)
-    ])
-    oof_map_k = np.mean([
-        map5_score(blend_bayes_decode(res_k["oof_uid"][i], res_k["oof_ca"][i], res_k["oof_sc"][i], res_k["oof_pn"][i],
-                                      res_k["oof_ca"][i], res_k["oof_sc"][i], res_k["oof_pn"][i], w1=1.0, bias=best_b, temp=best_t), fold_labels[i])
+        map5_score(blend_bayes_decode(res_d["oof_uid"][i], res_d["oof_ca"][i], res_d["oof_sc"][i], oof_pn_d[i],
+                                      res_d["oof_ca"][i], res_d["oof_sc"][i], oof_pn_d[i], w1=1.0, bias=best_b, temp=best_t), fold_labels[i])
         for i in range(n_f)
     ])
     oof_auc_b = roc_auc_score(
         np.concatenate(fold_labels) == "new_individual",
-        w_diff * np.concatenate(res_d["oof_pn"]) + (1.0 - w_diff) * np.concatenate(res_k["oof_pn"]),
+        w_diff * np.concatenate(oof_pn_d) + (1.0 - w_diff) * np.concatenate(oof_pn_k),
     )
     m3_cv[sp] = best_oof_map5
 
     te_lists = blend_bayes_decode(
         uids,
-        res_d["te_ca"], res_d["te_sc"], res_d["te_pn"],
-        res_k["te_ca"], res_k["te_sc"], res_k["te_pn"],
+        res_d["te_ca"], res_d["te_sc"], te_pn_d,
+        res_k["te_ca"], res_k["te_sc"], te_pn_k,
         w1=w_diff, bias=best_b, temp=best_t,
     )
     r1_new_pct = 100.0 * np.mean([p[0] == "new_individual" for p in te_lists])
     for qi_idx, qid in enumerate(sp_te["id"].values):
         m3_preds[qid] = " ".join(te_lists[qi_idx])
 
+    krec_msg = f"kRec OOF AUC={res_k['auc']:.4f} | " if need_k else ""
     print(
-        f"  [Model 3 - {sp.upper()}] kRec OOF={oof_map_k:.4f} (AUC={res_k['auc']:.4f}) | "
-        f"Diffusion OOF={oof_map_d:.4f} (AUC={res_d['auc']:.4f}) | "
-        f"Blend OOF={best_oof_map5:.4f} (AUC={oof_auc_b:.4f}, b={best_b:.2f}, t={best_t:.2f}, Test R1 new={r1_new_pct:.1f}%)"
+        f"  [Model 3 - {sp.upper()}] {krec_msg}Diff OOF={oof_map_d:.4f} (AUC={res_d['auc']:.4f}) | "
+        f"Final OOF={best_oof_map5:.4f} (AUC={oof_auc_b:.4f}, w_diff={w_diff:.2f}, platt={use_platt}, b={best_b:.2f}, t={best_t:.2f}, Test R1 new={r1_new_pct:.1f}%)",
+        flush=True,
     )
 
 
@@ -1132,7 +1210,7 @@ w_avg = lambda d: (d["hyena"] * n_h + d["leopard"] * n_l) / (n_h + n_l)
 summary = pd.DataFrame([
     {"Model": "Model 1 (Baseline Cosine k-NN)", "Hyena CV": f"{m1_cv['hyena']:.4f}", "Leopard CV": f"{m1_cv['leopard']:.4f}", "Weighted CV": f"{w_avg(m1_cv):.4f}", "Kaggle Public": "—"},
     {"Model": "Model 2 (Flank + Thresholds)",   "Hyena CV": f"{m2_cv['hyena']:.4f}", "Leopard CV": f"{m2_cv['leopard']:.4f}", "Weighted CV": f"{w_avg(m2_cv):.4f}", "Kaggle Public": "0.75821"},
-    {"Model": "Model 3 (Dual Diffusion+kRec)",  "Hyena CV": f"{m3_cv['hyena']:.4f}", "Leopard CV": f"{m3_cv['leopard']:.4f}", "Weighted CV": f"{w_avg(m3_cv):.4f}", "Kaggle Public": "0.835"},
+    {"Model": "Model 3 (Dual Diffusion+kRec)",  "Hyena CV": f"{m3_cv['hyena']:.4f}", "Leopard CV": f"{m3_cv['leopard']:.4f}", "Weighted CV": f"{w_avg(m3_cv):.4f}", "Kaggle Public": "Pending upload (prev: 0.835)"},
 ])
 print("\n" + "=" * 72)
 print(" MODEL PROGRESSION SUMMARY (MAP@5)")
