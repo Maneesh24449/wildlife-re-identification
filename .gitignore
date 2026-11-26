@@ -9,6 +9,7 @@ __pycache__/
 
 # Heavy data and binaries
 data/
+/projectwild3/
 cache/
 *.zip
 *.npy
