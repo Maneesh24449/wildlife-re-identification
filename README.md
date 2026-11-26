@@ -28,9 +28,10 @@ The goal is to identify individual spotted hyenas and leopards from camera-trap 
 3. **Viewpoint Flank Asymmetry & View-Split Prototypes**:
    - Spotted hyenas and leopards have asymmetric coat markings across left and right flanks.
    - Model 2 applies an opposite-flank penalty (`-0.05`), while Model 3 builds separate `left`, `right`, and `neutral` identity prototypes so opposite flanks never blur together.
-4. **Multi-Space Whitened Retrieval & Two-Stage GBDT + Bayes Expected MAP@5**:
-   - Model 3 combines shrinkage LDA whitening, PCA whitening, CSLS hubness suppression, balanced kernel ridge separation, inductive alpha-QE/DBA, and k-reciprocal Jaccard re-ranking (`k1=8, k2=2, lam=0.55`).
-   - A Stage-A ensemble (`LGBMClassifier`, `HistGradientBoostingClassifier`, `LGBMRanker`) scores candidates across 37+ retrieval/margin/coherence features, a Stage-B novelty ensemble estimates $P(\text{new\_individual} \mid q)$, and Bayes Expected MAP@5 decoding blends the inductive (`55%`) and clean hybrid k-reciprocal (`45%`) branches to reach **0.8177** on Kaggle.
+4. **Dual-Branch Manifold Diffusion + k-Reciprocal Retrieval & Two-Stage GBDT**:
+   - **Branch 1 (`kRec`)**: Shrinkage LDA (`lda_sample`), gallery PCA whitening, viewpoint-split centroids, CSLS hubness suppression, balanced kernel ridge separation, inductive $\alpha$-QE/DBA, and raw k-reciprocal Jaccard re-ranking (`k1=8, k2=2, lam=0.55`).
+   - **Branch 2 (`Diff`)**: Identity-balanced LDA (`lda_bal`) + transductive PCA (`[G; Q]`), impostor max-bias debiasing ($-0.35 \cdot P_{98}$), encounter-collapsed k-reciprocal (`k1=10`), and **Sparse Manifold Graph Diffusion** ($(I - \alpha P) Z = (1 - \alpha) Y$) with a **Bhattacharyya Diffusion Kernel** ($\cos(\sqrt{Z_q}, \sqrt{Z_g})$) and same-burst query pooling (`cos >= 0.82`).
+   - A Stage-A ensemble (`LGBMClassifier`, `HistGradientBoostingClassifier`, `LGBMRanker`) scores candidates across both branches, a Stage-B novelty ensemble (`LGBMClassifier`, `HistGradientBoostingClassifier`, `GradientBoostingClassifier`) estimates $P(\text{new\_individual} \mid q)$, and Bayes Expected MAP@5 decoding blends Diffusion (`65%` Hyena / `50%` Leopard) with k-Reciprocal (`35%` Hyena / `50%` Leopard) to reach **0.835** on Kaggle.
 
 ---
 
@@ -42,7 +43,7 @@ As required by the project instructions, we developed three distinct model versi
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: |
 | **Model 1: Baseline** | Cosine Similarity k-NN | L2-normalization, nearest neighbors, naive rank-5 `new_individual` | 0.5765 | 0.5327 | 0.5518 | — |
 | **Model 2: Enhanced k-NN** | Viewpoint + Calibrated Thresholding | Opposite-flank penalty (`-0.05`), species-specific `new_individual` cutoffs (`0.52` / `0.54`) | 0.7898 | 0.7571 | 0.7714 | 0.75821 |
-| **Model 3: Multi-Space GBDT** | Whitened Retrieval + Two-Stage GBDT | Shrinkage LDA/PCA, view-split prototypes, CSLS, balanced ridge, k-reciprocal + Stage A/B GBDT & Bayes MAP@5 | 0.8863 | 0.8304 | **0.8547** | **0.8177** (Best) |
+| **Model 3: Dual Diffusion + GBDT** | Manifold Diffusion + k-Recip GBDT | Balanced LDA, impostor debiasing, encounter-collapsed diffusion + Bhattacharyya + Stage A/B GBDT & Bayes MAP@5 | 0.9018 | 0.8353 | **0.8643** | **0.835** (Best) |
 
 *\*Note: Model 1 was evaluated on local encounter-disjoint CV; to preserve daily submission limits, our enhanced pipelines (Model 2 and Model 3) were submitted to Kaggle.*
 
@@ -57,9 +58,9 @@ As required by the project instructions, we developed three distinct model versi
   * Performed error analysis on Model 1 showing that failing to prioritize unseen animals drops encounter-disjoint MAP@5 to `0.5518`.
 
 * **Raunak Mishra (2024455)**:
-  * Formulated and implemented **Model 3** (`submission_model3.csv` / `submission.csv`): multi-space shrinkage LDA and PCA whitening, CSLS hubness suppression, balanced ridge regression, and inductive + k-reciprocal two-stage GBDT ensembles (`LGBMClassifier`, `HistGradientBoostingClassifier`, `LGBMRanker`, `GradientBoostingClassifier`).
-  * Replaced fixed heuristic novelty thresholds with Stage-B posterior estimation and Bayes Expected MAP@5 list decoding.
-  * Refactored the end-to-end `run_pipeline.py` script and `Wildlife_ReID_Pipeline.ipynb` notebook, bringing our Kaggle public score up from `0.75821` to **0.8177**.
+  * Formulated and implemented **Model 3** (`submission_model3.csv` / `submission.csv`): identity-balanced & multi-space LDA/PCA whitening, impostor max-bias debiasing, encounter-collapsed sparse manifold diffusion with Bhattacharyya kernel scoring, k-reciprocal re-ranking, and two-stage GBDT ensembles (`LGBMClassifier`, `HistGradientBoostingClassifier`, `LGBMRanker`, `GradientBoostingClassifier`).
+  * Replaced fixed heuristic novelty thresholds with Stage-B posterior estimation, query-burst pooling, and calibrated Bayes Expected MAP@5 list decoding.
+  * Refactored the end-to-end `run_pipeline.py` script and `Wildlife_ReID_Pipeline.ipynb` notebook, raising our Kaggle public score from `0.75821` to **0.835**.
 
 * **Rishabh Khannawalia (2024463)**:
   * Audited camera-trap burst leakage during random splits (`39.8%` vs `8.9%` high-similarity leopard twins) and built the encounter-disjoint 3-fold open-set validation protocol.
@@ -135,8 +136,8 @@ ML-Project3-Wildlife-ReID/
 ├── run_pipeline.py               # Standalone runner script for all 3 models
 ├── submission_model1.csv         # Model 1 baseline predictions (2,791 rows)
 ├── submission_model2.csv         # Model 2 viewpoint + threshold predictions (0.75821 Kaggle)
-├── submission_model3.csv         # Model 3 Multi-Space Two-Stage GBDT predictions (0.8177 Kaggle)
-└── submission.csv                # Final competition submission matching Model 3 (0.8177 Kaggle)
+├── submission_model3.csv         # Model 3 Dual Diffusion + k-Recip GBDT predictions (0.835 Kaggle)
+└── submission.csv                # Final competition submission matching Model 3 (0.835 Kaggle)
 ```
 
 ---
