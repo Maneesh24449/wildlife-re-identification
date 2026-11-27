@@ -1,141 +1,174 @@
 # Wildlife Re-Identification (Problem Statement 3)
-## Machine Learning Course Project - IIIT Delhi
 
-This repository contains our team's complete, reproducible code and final submissions for the **Wildlife Re-Identification** Kaggle competition.
+Machine Learning course project, IIIT Delhi.
 
----
+This repo has our code and final submissions for the Wildlife Re-Identification Kaggle competition.
 
-## Team Members
+## Team
 
 | Name | Roll number | Email |
 | --- | --- | --- |
-| **R S Maneesh** (Group Representative) | 2024449 | maneesh24449@iiitd.ac.in |
-| **Raunak Mishra** | 2024455 | raunak24455@iiitd.ac.in |
-| **Rishabh Khannawalia** | 2024463 | rishabh24463@iiitd.ac.in |
-| **Shakti** | 2024519 | shakti24519@iiitd.ac.in |
+| R S Maneesh (Group Representative) | 2024449 | maneesh24449@iiitd.ac.in |
+| Raunak Mishra | 2024455 | raunak24455@iiitd.ac.in |
+| Rishabh Khannawalia | 2024463 | rishabh24463@iiitd.ac.in |
+| Shakti | 2024519 | shakti24519@iiitd.ac.in |
 
-## 1. Project Overview & Approach
+## The problem
 
-The goal is to identify individual spotted hyenas and leopards from camera-trap sightings using supplied 2,152-dimensional MiewID embeddings and precomputed SIFT descriptors. The test set has 2,791 images. An animal can either belong to an individual seen during training (of the same species) or be an unseen animal labeled as `new_individual`. Evaluation is strictly on **MAP@5**.
+We have to identify individual spotted hyenas and leopards from camera-trap sightings. We're given 2,152-dimensional MiewID embeddings and precomputed SIFT descriptors. The test set has 2,791 images, and each one is either an individual seen in training (of the same species) or an unseen animal, which should be labelled `new_individual`. The metric is MAP@5.
 
-### Key Pipeline Components
-1. **Feature Normalization & Species Separation**: All MiewID descriptors are L2-normalized onto the unit hypersphere so dot products compute exact cosine similarity. Retrieval runs strictly within species (`hyena` vs `leopard`).
-2. **Encounter-Disjoint Open-Set Validation**:
-   - Standard random image splits leak same-burst photos (`39.8%` of leopard queries share a `>= 0.80` gallery twin locally vs only `8.9%` on Kaggle test).
-   - We cluster same-identity burst frames (`cos >= 0.82`) into encounters, hold out ~25–26% of identities completely as `new_individual`, and hold out entire encounters for known queries. Model 3 uses five repeated development splits plus a separate three-fold confirmation audit for the leopard refinement.
-3. **Viewpoint Flank Asymmetry & View-Split Prototypes**:
-   - Spotted hyenas and leopards have asymmetric coat markings across left and right flanks.
-   - Model 2 applies an opposite-flank penalty of `-0.05` for hyenas. Model 3 builds separate `left`, `right`, and `neutral` identity prototypes.
-4. **Dual-Branch Manifold Diffusion + k-Reciprocal Retrieval & Two-Stage GBDT**:
-   - **Branch 1 (`kRec`)**: Shrinkage LDA (`lda_sample`), gallery PCA whitening, viewpoint-split centroids, CSLS hubness suppression, balanced kernel ridge separation, inductive $\alpha$-QE/DBA, and raw k-reciprocal Jaccard re-ranking (`k1=8, k2=2, lam=0.55`).
-   - **Branch 2 (`Diff`)**: Identity-balanced LDA (`lda_bal`) + transductive PCA (`[G; Q]`), impostor max-bias debiasing ($-0.35 \cdot P_{98}$), encounter-collapsed k-reciprocal (`k1=10`), and **Sparse Manifold Graph Diffusion** ($(I - \alpha P) Z = (1 - \alpha) Y$) with a **Bhattacharyya Diffusion Kernel** ($\cos(\sqrt{Z_q}, \sqrt{Z_g})$) and same-burst query pooling (`cos >= 0.82`).
-   - A Stage-A ensemble (`LGBMClassifier`, `HistGradientBoostingClassifier`, `LGBMRanker`) scores candidates across both branches, a Stage-B novelty ensemble estimates $P(\text{new\_individual} \mid q)$, and Bayes Expected MAP@5 decoding blends Diffusion (`65%` Hyena / `50%` Leopard) with k-Reciprocal (`35%` Hyena / `50%` Leopard). This global backbone scored **0.83547** on Kaggle.
-   - The final Model 3 verifies up to six leopard candidates using RootSIFT and up to two compatible gallery encounters per candidate. A regularized correction adjusts the full candidate union, and a three-outcome model estimates novel, known covered, and known missed. The final submission scored **0.84209** on Kaggle.
+## Our approach
 
----
+### Basics
 
-## 2. Model Progression
+We L2-normalise all MiewID descriptors, so a dot product gives cosine similarity. Hyenas and leopards are always retrieved separately.
+
+### Validation
+
+A random image split doesn't work well here because photos from the same burst end up on both sides. Locally, 39.8% of leopard queries had a gallery twin with similarity of at least 0.80, compared with only 8.9% on the Kaggle test set.
+
+To get around this, we group frames of the same animal into encounters (cosine ≥ 0.82). We then hold out about 25–26% of identities completely to act as `new_individual`, and hold out whole encounters for the known queries. For Model 3 we used five repeated development splits, plus a separate three-fold audit to confirm the leopard refinement.
+
+### Left and right flanks
+
+Hyenas and leopards have different coat markings on their left and right sides. Model 2 handles this with a -0.05 penalty for opposite-flank matches in hyenas. Model 3 instead builds separate `left`, `right` and `neutral` prototypes for each identity.
+
+### Model 3
+
+Model 3 combines two retrieval branches.
+
+**k-reciprocal branch (`kRec`)**
+- Shrinkage LDA (`lda_sample`) and PCA whitening fitted on the gallery
+- Viewpoint-split centroids
+- CSLS hubness suppression and balanced kernel ridge separation
+- Inductive α-QE/DBA
+- k-reciprocal Jaccard re-ranking (`k1=8, k2=2, lam=0.55`)
+
+**Diffusion branch (`Diff`)**
+- Identity-balanced LDA (`lda_bal`) and transductive PCA on gallery + queries (`[G; Q]`)
+- Impostor max-bias debiasing (-0.35 · P98)
+- Encounter-collapsed k-reciprocal (`k1=10`)
+- Sparse graph diffusion, `(I - αP) Z = (1 - α) Y`, scored with a Bhattacharyya kernel, `cos(√Z_q, √Z_g)`
+- Pooling of queries from the same burst (cosine ≥ 0.82)
+
+**Putting them together**
+
+A first-stage ensemble (`LGBMClassifier`, `HistGradientBoostingClassifier`, `LGBMRanker`) scores candidates from both branches. A second-stage ensemble estimates the probability that a query is a new individual. We then decode the top-5 list by maximising expected MAP@5, blending the two branches as follows:
+
+| Species | Diffusion | k-reciprocal |
+| --- | ---: | ---: |
+| Hyena | 65% | 35% |
+| Leopard | 50% | 50% |
+
+This global model scored **0.83547** on Kaggle.
+
+**SIFT check for leopards**
+
+As a final step, we verify up to six leopard candidates with RootSIFT, using up to two compatible gallery encounters per candidate. A regularised correction then adjusts the full candidate set, and a three-outcome model estimates whether the query is novel, known and covered by the shortlist, or known but missed. This brought our score to **0.84209**.
+
+## Results
 
 | Model | Main change | Hyena CV | Leopard CV | Weighted CV | Kaggle public MAP@5 |
 | --- | --- | ---: | ---: | ---: | ---: |
-| **1. Cosine k-NN** | Retrieve normalized embeddings and put `new_individual` fifth. | 0.5765 | 0.5327 | 0.5518 | — |
-| **2. Viewpoint-aware k-NN** | Add a hyena opposite-flank penalty and species-specific novelty thresholds. | 0.7898 | 0.7571 | 0.7714 | 0.75821 |
-| **3. Dual-branch GBDT + SIFT** | Blend diffusion and k-reciprocal scores, then verify leopard candidates and account for shortlist coverage. | 0.9018 | 0.8353 | 0.8643 | **0.84209** |
+| 1. Cosine k-NN | Nearest neighbours, with `new_individual` always fifth | 0.5765 | 0.5327 | 0.5518 | — |
+| 2. Viewpoint-aware k-NN | Hyena flank penalty and per-species novelty thresholds | 0.7898 | 0.7571 | 0.7714 | 0.75821 |
+| 3. Two-branch GBDT + SIFT | Diffusion + k-reciprocal, then leopard verification | 0.9018 | 0.8353 | 0.8643 | **0.84209** |
 
-Model 3 CV shows the global backbone, which scored **0.83547** on Kaggle before the leopard SIFT refinement.
+The CV numbers for Model 3 are for the global model (0.83547 on Kaggle), before the SIFT step.
 
-In a separate nested encounter-disjoint audit, the leopard refinement gained **+0.00574 weighted MAP@5** and **+0.00508** with thinner galleries. The three leopard fold gains were +0.01314, +0.01236, and +0.00503. Known query encounters were unused in the earlier audit. Novel identities partly overlapped it.
+We tested the leopard refinement separately in a nested encounter-disjoint audit. It gained +0.00574 weighted MAP@5, and +0.00508 with thinner galleries. The gains on the three leopard folds were +0.01314, +0.01236 and +0.00503. The known query encounters hadn't been used in the earlier audit, though the novel identities partly overlapped with it.
 
-See [MODEL_LOG.md](MODEL_LOG.md) for intermediate versions, rejected experiments, and demo notes.
+Intermediate versions, rejected experiments and demo notes are in [MODEL_LOG.md](MODEL_LOG.md).
 
-## 3. Individual Contributions Breakdown
+## Who did what
 
-* **R S Maneesh (2024449)** — *Group Representative*:
-  * Team lead, repository hosting, and group coordination.
-  * Conducted Exploratory Data Analysis (EDA) on species distributions, identity frequencies, and class imbalance (noting that 99 leopard identities are singletons with only 1 photo).
-  * Built and benchmarked **Model 1** (`submission_model1.csv`) using L2-normalized cosine k-NN with naive Rank-5 `new_individual`.
-  * Performed error analysis on Model 1 showing that failing to prioritize unseen animals drops encounter-disjoint MAP@5 to `0.5518`.
+**R S Maneesh (2024449), Group Representative**
+- Led the team, hosted the repository and coordinated the group
+- Did the EDA on species distribution, identity frequencies and class imbalance (for example, 99 leopard identities have only one photo)
+- Built and benchmarked Model 1 (`submission_model1.csv`)
+- Analysed its errors and showed that not prioritising unseen animals leaves encounter-disjoint MAP@5 at 0.5518
 
-* **Raunak Mishra (2024455)**:
-  * Formulated and implemented **Model 3** (`submission_model3.csv` / `submission.csv`): identity-balanced & multi-space LDA/PCA whitening, impostor max-bias debiasing, encounter-collapsed sparse manifold diffusion with Bhattacharyya kernel scoring, k-reciprocal re-ranking, and two-stage GBDT ensembles (`LGBMClassifier`, `HistGradientBoostingClassifier`, `LGBMRanker`, `GradientBoostingClassifier`).
-  * Replaced fixed heuristic novelty thresholds with Stage-B posterior estimation, query-burst pooling, and calibrated Bayes Expected MAP@5 list decoding.
-  * Refactored the end-to-end `run_pipeline.py` script and `Wildlife_ReID_Pipeline.ipynb` notebook, raising our Kaggle public score from `0.75821` to **0.835**.
+**Raunak Mishra (2024455)**
+- Designed and implemented Model 3 (`submission_model3.csv` / `submission.csv`): the LDA/PCA whitening, debiasing, diffusion, k-reciprocal re-ranking and two-stage GBDT ensembles (including `GradientBoostingClassifier`)
+- Replaced the fixed novelty thresholds with estimated probabilities, query-burst pooling and expected MAP@5 decoding
+- Refactored `run_pipeline.py` and the notebook, taking our public score from 0.75821 to 0.835
 
-* **Rishabh Khannawalia (2024463)**:
-  * Audited camera-trap burst leakage during random splits (`39.8%` vs `8.9%` high-similarity leopard twins) and built the encounter-disjoint 3-fold open-set validation protocol.
-  * Implemented and tuned the Rank-1 novelty thresholds for **Model 2** ($T = 0.52$ for Hyena, $0.54$ for Leopard) to cleanly separate seen vs unseen animals.
-  * Verified zero-leakage submission checks (`2,791` test rows, unique valid same-species IDs, zero nulls) and fold-strict inductive whitening boundaries.
+**Rishabh Khannawalia (2024463)**
+- Found the burst leakage in random splits and built the encounter-disjoint 3-fold open-set validation
+- Implemented and tuned Model 2's novelty thresholds (0.52 for hyenas, 0.54 for leopards)
+- Checked the submissions (2,791 rows, valid same-species IDs, no nulls) and that whitening respected fold boundaries
 
-* **Shakti (2024519)**:
-  * Audited viewpoint metadata and verified biological flank asymmetry between `left` and `right` sightings in hyenas and leopards.
-  * Implemented Model 2's opposite-flank penalty (`-0.05`) and Model 3's viewpoint-split `left` / `right` / `neutral` prototypes so asymmetric flanks do not blur centroids together.
-  * Analyzed Model 2 failure modes (background lighting variance, singleton suppression, and flat top-5 confidence curves) that motivated Model 3.
+**Shakti (2024519)**
+- Audited the viewpoint metadata and verified the left/right flank asymmetry in both species
+- Implemented Model 2's flank penalty and Model 3's viewpoint-split prototypes
+- Analysed where Model 2 failed (background lighting, suppressed singletons, flat top-5 confidence), which motivated Model 3
 
----
+## Running the code
 
-## 4. Setup & Execution Guide
+### 1. Set up the environment
 
-### Prerequisites
-- **Python**: Use Python `3.11` or newer. The final verification environment used Python 3.14.4, NumPy 2.5.2, pandas 3.0.5, SciPy 1.17.1, scikit-learn 1.9.0, and LightGBM 4.7.0 on Windows.
-- **Data & Environment Notice**: In compliance with course rules and repository size limits, the dataset (`data/`) and Python virtual environments (`.venv*`) are **not** committed to GitHub and must be set up locally.
+You need Python 3.11 or newer. Our final verification was on Windows with Python 3.14.4, NumPy 2.5.2, pandas 3.0.5, SciPy 1.17.1, scikit-learn 1.9.0 and LightGBM 4.7.0.
 
-### Step 1: Environment Setup (Windows)
-Create and activate a virtual environment:
 ```powershell
 python -m venv .venv311
 .venv311\Scripts\activate
-```
-
-Install the required dependencies:
-```powershell
 pip install -r requirements.txt
 ```
 
-### Step 2: Expected Dataset Directory Structure
-Extract the competition dataset into the project root. The runner and notebook support flat `data/`, `data/projectwild3/reid_student_data_main/`, and `projectwild3/reid_student_data_main/`. For another location, such as a Kaggle input mount, set `REID_DATA_DIR` to the directory that contains `train.csv`.
+### 2. Add the data
+
+The dataset (`data/`) and virtual environments (`.venv*`) aren't committed, because of course rules and repo size limits. Extract the competition data into the project root like this:
+
 ```
 ML-Project3-Wildlife-ReID/
 └── data/
     └── projectwild3/
         ├── reid_student_data_main/
-        │   ├── train.csv                # Training sighting labels & metadata
-        │   ├── test.csv                 # Test query sightings
-        │   ├── miewid_ids.csv           # Sighting ID to embedding index mapping
-        │   ├── miewid_features.npy      # Precomputed 2,152-dim MiewID descriptors
-        │   └── sample_submission.csv    # Competition submission format reference
-        ├── sift_features_train.npz/     # Extracted SIFT arrays for the 0.84209 model
-        └── sift_features_test.npz/      # Extracted SIFT arrays for the 0.84209 model
+        │   ├── train.csv                # training labels and metadata
+        │   ├── test.csv                 # test queries
+        │   ├── miewid_ids.csv           # sighting ID to embedding index
+        │   ├── miewid_features.npy      # 2,152-dim MiewID descriptors
+        │   └── sample_submission.csv    # submission format
+        ├── sift_features_train.npz/     # SIFT arrays (needed for 0.84209)
+        └── sift_features_test.npz/
 ```
 
-### Step 3: Running the Standalone Pipeline
-To run the full end-to-end pipeline, evaluate cross-validation across all three stages, and regenerate all CSVs:
+A flat `data/` folder, `data/projectwild3/reid_student_data_main/` and `projectwild3/reid_student_data_main/` all work. If your data is somewhere else (such as a Kaggle input mount), set `REID_DATA_DIR` to the folder containing `train.csv`.
+
+### 3. Run the pipeline
+
 ```powershell
 python run_pipeline.py
 ```
-This outputs `submission_model1.csv`, `submission_model2.csv`, `submission_model3.csv`, and `submission.csv` (final best Model 3 predictions) directly in the project root.
-Set `REID_OUTPUT_DIR` to write the regenerated CSVs to a separate directory. Both SIFT stores must be extracted directories with per-image `_xy.npy` and `_desc.npy` files for the **0.84209** result. If both stores are absent, the runner prints that it is using the **0.83547** global-only Model 3.
 
-### Step 4: Running the Notebook
-To interactively explore the three model progression stages:
+This cross-validates all three models and writes `submission_model1.csv`, `submission_model2.csv`, `submission_model3.csv` and `submission.csv` (our best Model 3 predictions) to the project root. To write them elsewhere, set `REID_OUTPUT_DIR`.
+
+To reproduce 0.84209, both SIFT stores must be extracted folders with `_xy.npy` and `_desc.npy` files for each image. If both are missing, the script says so and falls back to the global-only Model 3 (0.83547).
+
+### 4. Or use the notebook
+
 ```powershell
 jupyter notebook Wildlife_ReID_Pipeline.ipynb
 ```
-Launch the notebook from the project root, or set `REID_DATA_DIR` to the mounted competition input. It includes the same three-model code and final leopard refinement as the runner.
 
----
+Start it from the project root, or set `REID_DATA_DIR`. It has the same three models and leopard refinement as the script.
 
-## 5. Repository Files
+## Files
 
-- [`run_pipeline.py`](run_pipeline.py) runs all three models using [`sift_rerank.py`](sift_rerank.py) and the packages in [`requirements.txt`](requirements.txt).
-- [`Wildlife_ReID_Pipeline.ipynb`](Wildlife_ReID_Pipeline.ipynb) explains and runs the same models.
-- [`MODEL_LOG.md`](MODEL_LOG.md) records experiment results and decisions for the demo.
-- [`submission_model1.csv`](submission_model1.csv) and [`submission_model2.csv`](submission_model2.csv) contain the earlier predictions.
-- [`submission.csv`](submission.csv) and [`submission_model3.csv`](submission_model3.csv) contain the same 0.84209 predictions.
+| File | What it is |
+| --- | --- |
+| [`run_pipeline.py`](run_pipeline.py) | Runs all three models |
+| [`sift_rerank.py`](sift_rerank.py) | SIFT re-ranking used by the pipeline |
+| [`requirements.txt`](requirements.txt) | Dependencies |
+| [`Wildlife_ReID_Pipeline.ipynb`](Wildlife_ReID_Pipeline.ipynb) | Walkthrough of the same models |
+| [`MODEL_LOG.md`](MODEL_LOG.md) | Experiment results and decisions |
+| [`submission_model1.csv`](submission_model1.csv), [`submission_model2.csv`](submission_model2.csv) | Earlier predictions |
+| [`submission.csv`](submission.csv), [`submission_model3.csv`](submission_model3.csv) | Final predictions (identical, 0.84209) |
 
-## 6. Course Rules Compliance Checklist
+## Course rules
 
-- [x] **No raw images used**: The pipeline uses only the supplied MiewID embeddings, SIFT arrays and metadata.
-- [x] **No deep learning frameworks**: No PyTorch, TensorFlow, Keras, or neural network layers.
-- [x] **No external data or pre-trained models**: Trained only on the provided training features.
-- [x] **Permitted libraries only**: `numpy`, `pandas`, `scipy`, `scikit-learn`, `lightgbm`.
-- [x] **Correct submission format**: Exactly 2,791 rows matching `test.csv` IDs, valid labels, no NaNs.
+- We used only the supplied MiewID embeddings, SIFT arrays and metadata, with no raw images.
+- No deep learning frameworks or neural network layers (no PyTorch, TensorFlow or Keras).
+- No external data or pre-trained models; everything is trained on the provided training features.
+- Libraries used are from the permitted list: `numpy`, `pandas`, `scipy`, `scikit-learn`, `lightgbm`.
+- The submission has exactly 2,791 rows matching the IDs in `test.csv`, with valid labels and no NaNs.
