@@ -1,35 +1,47 @@
 # Wildlife Re-ID model log
 
-Our final submission scored **0.84209 public MAP@5**. The three models in the notebook are cosine k-NN, viewpoint-aware k-NN, and the dual-branch GBDT with leopard SIFT verification. The intermediate versions below show how we got there.
+Our final submission scored **0.84209** public MAP@5. The notebook covers three models: cosine k-NN, viewpoint-aware k-NN, and a two-branch GBDT with SIFT verification for leopards. This log also includes the versions in between, to show how we got there.
 
-## Model progression
+## How the model progressed
 
-| Stage | Main change | Result and decision |
+| Stage | What changed | Result and what we did next |
 | --- | --- | --- |
-| **1. Cosine k-NN** | Normalize MiewID embeddings, retrieve within species, and put `new_individual` fifth. | **0.5518 local MAP@5**. Keep as the baseline and handle unseen animals earlier. |
-| **2. Viewpoint and novelty thresholds** | Penalize opposite-flank hyena matches by 0.05. Use novelty cutoffs of 0.52 for hyenas and 0.54 for leopards. | **0.7714 local, 0.75821 public**. Keep as Model 2. Fixed cutoffs still struggle with sparse galleries. |
-| Early learned reranking | Train LightGBM on candidate-pair features. | **0.78311 public**. Improve retrieval and give novelty its own model. |
-| Multi-space GBDT revisions | Add LDA/PCA whitening, viewpoint prototypes, a separate novelty model, and k-reciprocal reranking. | **0.80794 public** (inductive), **0.81771** (blended), **0.82346** (clean k-reciprocal). Use these revisions as the basis for the backbone. |
-| Dual-branch global backbone | Combine k-reciprocal retrieval with encounter-collapsed graph diffusion. Add identity-balanced LDA and subtract a gallery-estimated impostor bias. | **0.8643 development CV, 0.83547 public**. Keep both branches and compare later changes on a separate outer audit. |
-| **3. Final Model 3 with leopard SIFT** | Verify up to six candidates using supplied RootSIFT and rescore the combined shortlist before selecting five. Model novelty, retrieved known identities, and missed known identities separately. | **0.84209 public**. Keep the leopard refinement and the original hyena predictions. Confirmation gained **+0.00574 weighted MAP@5**, with **+0.00508** on thinner galleries. |
+| 1. Cosine k-NN | Normalised the MiewID embeddings, retrieved within species and always put `new_individual` fifth. | 0.5518 local MAP@5. Kept as the baseline; unseen animals needed to be ranked higher. |
+| 2. Viewpoint and novelty thresholds | Added a 0.05 penalty for opposite-flank hyena matches, with novelty cutoffs of 0.52 (hyena) and 0.54 (leopard). | 0.7714 local, 0.75821 public. Kept as Model 2, though fixed cutoffs still struggle when an animal has few gallery photos. |
+| Early learned re-ranking | Trained LightGBM on features of candidate pairs. | 0.78311 public. Next step was better retrieval and a separate novelty model. |
+| Multi-space GBDT revisions | Added LDA/PCA whitening, viewpoint prototypes, a separate novelty model and k-reciprocal re-ranking. | Public scores of 0.80794 (inductive), 0.81771 (blended) and 0.82346 (clean k-reciprocal). These became the basis of the backbone. |
+| Two-branch global backbone | Combined k-reciprocal retrieval with encounter-collapsed graph diffusion, added identity-balanced LDA and subtracted an impostor bias estimated from the gallery. | 0.8643 development CV, 0.83547 public. Kept both branches and judged later changes on a separate outer audit. |
+| 3. Final Model 3 with leopard SIFT | Verified up to six candidates with the supplied RootSIFT, then rescored the whole shortlist before picking five. Novel, retrieved known and missed known cases are modelled separately. | **0.84209** public. Kept this for leopards and left the hyena predictions as they were. Confirmation showed +0.00574 weighted MAP@5, or +0.00508 with thinner galleries. |
 
-The runner reports **0.8643** as backbone development CV and **0.84209** as the historical Kaggle public score.
+The script reports 0.8643 as the backbone's development CV and 0.84209 as the Kaggle public score we got earlier.
 
-## Experiment decisions
+## What we tried
 
 | Experiment | What we saw | Decision |
 | --- | --- | --- |
-| Pseudo-gallery expansion and alternate diffusion | Pseudo-label errors spread across the graph. Raw diffusion strength helped flag novel animals. | Keep the existing diffusion design. |
-| Exact viewpoint prototypes, full impostor normalization, and dropping leading PCA components | Smaller viewpoint groups had fewer examples. Full normalization amplified some impostor matches, and dropping PCA components removed useful signal. | Keep broad flank groups, additive impostor bias, and regularization. |
-| Larger galleries, gallery-support and singleton features, and calibration | The 80%-gallery variant scored **0.87068** versus **0.88094** on the same probe. The screened global challenger lost **0.00341 weighted MAP@5**. | Keep the original training and split recipe. |
-| One-position SIFT rerank after selecting five | **+0.00172 weighted MAP@5**. This could only move labels already in the final five. | Verify candidates before selecting five. |
-| Wider raw cosine, cross-view, and local descriptor retrieval | Candidate recall improved. The newly found true identities stayed outside the final five. | Keep the existing candidate pool. |
-| VLAD scoring and hyena transfer | **+0.00012** and **+0.00082** weighted MAP@5, below the **+0.002** promotion threshold. | Keep the 0.84209 variant. |
+| Pseudo-gallery expansion and alternative diffusion | Wrong pseudo-labels spread through the graph. Raw diffusion strength did help flag novel animals. | Kept the existing diffusion design. |
+| Exact viewpoint prototypes, full impostor normalisation, dropping the leading PCA components | Smaller viewpoint groups had too few examples, full normalisation boosted some impostor matches, and dropping components lost useful signal. | Kept the broad flank groups, additive impostor bias and regularisation. |
+| Larger galleries, gallery-support and singleton features, calibration | The 80% gallery version scored 0.87068, against 0.88094 on the same probe. The global challenger we screened lost 0.00341 weighted MAP@5. | Kept the original training and split setup. |
+| SIFT re-ranking of one position after picking the top five | +0.00172 weighted MAP@5, but it could only reorder labels already in the top five. | Moved verification to before the top five are picked. |
+| Wider raw cosine, cross-view and local descriptor retrieval | Candidate recall went up, but the newly found true identities still didn't reach the top five. | Kept the existing candidate pool. |
+| VLAD scoring and transfer to hyenas | +0.00012 and +0.00082 weighted MAP@5, both under our +0.002 bar. | Kept the 0.84209 version. |
 
+## Notes
 
-- **Why we split by encounter.** Random image splits can put near-duplicate camera-trap frames on both sides. For known animals we hold out whole encounters, and for novel animals we hold out whole identities.
-- **Why we moved SIFT earlier.** On 3,030 leopard query-fold rows, 199 known queries missed both shortlists and another 96 had the true identity shortlisted but outside the final five. Verifying before the cut gave those shortlisted identities a chance to move up.
-- **What still limits the model.** Few gallery photos, opposite flanks, and missing the true identity at retrieval can all cause errors. Known encounters in the final confirmation were unused in the earlier audit. Some novel identities overlapped, so we also reported the gain on previously unused rows.
-- **How to reproduce it.** The runner and standalone notebook generate all three model CSVs. The final file has 2,791 test IDs in order and five unique valid predictions each. A full local rerun matched the shipped CSV byte for byte.
+### Why we split by encounter
 
-For model code, setup, and the team's contribution summary, see [README.md](README.md) and [the project notebook](Wildlife_ReID_Pipeline.ipynb).
+A random image split can put near-identical camera-trap frames on both sides. So for known animals we hold out whole encounters, and for novel animals we hold out whole identities.
+
+### Why we moved SIFT earlier
+
+Out of 3,030 leopard query-fold rows, 199 known queries were missing from both shortlists. Another 96 had the correct identity shortlisted but not in the final five. Verifying before the cut gave those 96 a chance to move up.
+
+### What still limits the model
+
+Errors can still come from animals with few gallery photos, from opposite-flank views, and from the correct identity never being retrieved. The known encounters in the final confirmation hadn't been used in the earlier audit, but some novel identities overlapped, so we also reported the gain on previously unused rows.
+
+### Reproducing the results
+
+Both the script and the standalone notebook generate the CSVs for all three models. The final file has all 2,791 test IDs in order, each with five unique, valid predictions. A full local rerun matched the submitted CSV byte for byte.
+
+For the code, setup steps and team contributions, see [README.md](README.md) and [the notebook](Wildlife_ReID_Pipeline.ipynb).
