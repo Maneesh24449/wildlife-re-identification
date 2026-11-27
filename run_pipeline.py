@@ -5,7 +5,7 @@ Reproducible End-to-End Pipeline & Submission Generator
 Builds and evaluates three progressive classical ML / GBDT model stages:
   - Model 1: L2-Normalized Cosine k-NN Baseline (naive Rank-5 new_individual)
   - Model 2: Viewpoint-Aware Cosine k-NN + Calibrated Thresholding (Kaggle LB: 0.75821)
-  - Model 3: Dual-Branch GBDT + Bayes MAP@5 with leopard SIFT refinement
+  - Model 3: Dual-branch GBDT with Gaussian, Fisher-vector, and LNBNN candidate scoring
 
 Strict Rules Compliance:
   Uses only supplied MiewID features, SIFT descriptors and metadata with numpy, pandas, scipy,
@@ -18,6 +18,7 @@ import os
 os.environ.setdefault("OMP_NUM_THREADS", "4")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "4")
 os.environ.setdefault("MKL_NUM_THREADS", "4")
+os.environ.setdefault("LOKY_MAX_CPU_COUNT", "4")
 
 import time
 import warnings
@@ -31,6 +32,7 @@ from scipy.sparse.csgraph import connected_components
 from sklearn.ensemble import GradientBoostingClassifier, HistGradientBoostingClassifier
 from sklearn.metrics import roc_auc_score
 
+from final_rerank import branch_candidates, rank_final
 from sift_rerank import find_sift_directory, rerank_leopards
 
 warnings.filterwarnings("ignore")
@@ -51,7 +53,7 @@ if DATA_DIR is None:
         "Dataset not found. Set REID_DATA_DIR to the directory containing train.csv "
         "or extract the supplied dataset under data/ or projectwild3/."
     )
-OUTPUT_DIR = Path(os.environ.get("REID_OUTPUT_DIR", PROJECT_ROOT))
+OUTPUT_DIR = Path(os.environ.get("REID_OUTPUT_DIR", PROJECT_ROOT / "outputs"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 t0 = time.time()
@@ -1047,6 +1049,10 @@ def fit_branch_oof(fold_views, fold_labels, test_view, build_a_fn, build_b_fn, K
 m3_cv = {}
 m3_preds = {}
 SIFT_DIR = find_sift_directory(DATA_DIR)
+MODEL3_VERSION = os.environ.get("REID_MODEL3", "final")
+if MODEL3_VERSION not in ("final", "sift"):
+    raise ValueError("REID_MODEL3 must be 'final' or 'sift'.")
+USE_FINAL_LOCAL = SIFT_DIR is not None and MODEL3_VERSION == "final"
 if SIFT_DIR is None:
     print("  Supplied SIFT descriptors were not found. Running the global-only Model 3.")
 K = 12
@@ -1060,14 +1066,16 @@ for sp, hr, er, w_diff, bias_grid, temp_grid in sp_configs:
     sp_te = test_df[test_df["species"] == sp].reset_index(drop=True)
     sp_tr["enc"] = assign_encounters(sp_tr)
 
-    krec_folds, diff_folds, fold_labels, sift_folds = [], [], [], []
+    krec_folds, diff_folds, fold_labels, sift_folds, final_folds = [], [], [], [], []
     for s in [11, 22, 33, 44, 55]:
         gi, qi, li = make_open_set_split(sp_tr, holdout_id_ratio=hr, query_enc_ratio=er, max_per_id=10, seed=s)
         kv, dv = compute_dual_branch_views(gi, qi, sp)
         krec_folds.append(kv)
         diff_folds.append(dv)
         fold_labels.append(li)
-        if sp == "leopard" and SIFT_DIR is not None and s in (11, 22):
+        if USE_FINAL_LOCAL and s in (11, 22):
+            final_folds.append((gi, qi, li, kv["unique_ids"], branch_candidates((kv, dv), K)))
+        elif sp == "leopard" and SIFT_DIR is not None and s in (11, 22):
             sift_folds.append((gi, qi, li))
 
     krec_test, diff_test = compute_dual_branch_views(sp_tr, sp_te, sp)
@@ -1120,7 +1128,12 @@ for sp, hr, er, w_diff, bias_grid, temp_grid in sp_configs:
         w1=w_diff, bias=best_b, temp=best_t,
     )
     stock_r1_new_pct = 100.0 * np.mean([p[0] == "new_individual" for p in te_lists])
-    if sift_folds:
+    del krec_folds, diff_folds, krec_test, diff_test, kv, dv
+    if USE_FINAL_LOCAL:
+        print(f"  [Model 3 - {sp.upper()}] Fitting the Gaussian, Fisher, and LNBNN candidate scorer...", flush=True)
+        te_lists = rank_final(features, flank_side, sp, sp_tr, sp_te, uids, res_k, res_d,
+                              best_b, best_t, w_diff, te_lists, final_folds, SIFT_DIR)
+    elif sift_folds:
         print("  [Model 3 - LEOPARD] Verifying shortlisted candidates with supplied SIFT descriptors...", flush=True)
         sift_training = [
             (*fold, res_k["oof_uid"][i], (res_k["oof_ca"][i], res_d["oof_ca"][i]))
@@ -1152,15 +1165,26 @@ n_h = (test_df["species"] == "hyena").sum()
 n_l = (test_df["species"] == "leopard").sum()
 w_avg = lambda d: (d["hyena"] * n_h + d["leopard"] * n_l) / (n_h + n_l)
 
+model3_name = "Model 3 (Dual Diffusion+kRec)"
+model3_public = "0.83547"
+if USE_FINAL_LOCAL:
+    model3_name += " + Fisher/LNBNN"
+    model3_public = "0.84780"
+elif SIFT_DIR:
+    model3_name += " + SIFT"
+    model3_public = "0.84209"
+
 summary = pd.DataFrame([
     {"Model": "Model 1 (Baseline Cosine k-NN)", "Hyena CV": f"{m1_cv['hyena']:.4f}", "Leopard CV": f"{m1_cv['leopard']:.4f}", "Weighted CV": f"{w_avg(m1_cv):.4f}", "Kaggle Public": "—"},
     {"Model": "Model 2 (Flank + Thresholds)",   "Hyena CV": f"{m2_cv['hyena']:.4f}", "Leopard CV": f"{m2_cv['leopard']:.4f}", "Weighted CV": f"{w_avg(m2_cv):.4f}", "Kaggle Public": "0.75821"},
-    {"Model": "Model 3 (Dual Diffusion+kRec)" + (" + SIFT" if SIFT_DIR else ""), "Hyena CV": f"{m3_cv['hyena']:.4f}", "Leopard CV": f"{m3_cv['leopard']:.4f}", "Weighted CV": f"{w_avg(m3_cv):.4f}", "Kaggle Public": "0.84209" if SIFT_DIR else "0.83547"},
+    {"Model": model3_name, "Hyena CV": f"{m3_cv['hyena']:.4f}", "Leopard CV": f"{m3_cv['leopard']:.4f}", "Kaggle Public": model3_public},
 ])
 print("\n" + "=" * 72)
 print(" MODEL PROGRESSION SUMMARY (MAP@5)")
 print("=" * 72)
 print(summary.to_string(index=False))
-if SIFT_DIR:
+if USE_FINAL_LOCAL:
+    print("Model 3 CV columns show the global backbone. The public score is from the checked-in release CSV.")
+elif SIFT_DIR:
     print("Model 3 CV columns show the global backbone. The SIFT refinement gained +0.00574 weighted MAP@5 in the separate nested audit.")
 print(f"\nCompleted full pipeline in {time.time() - t0:.1f}s.")

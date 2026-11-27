@@ -2,7 +2,7 @@
 
 Machine Learning course project, IIIT Delhi.
 
-This repo has our code and final submissions for the Wildlife Re-Identification Kaggle competition.
+Our final [submission.csv](submission.csv) scored **0.84780 public MAP@5**. The runner and notebook use the supplied competition features to build the three models.
 
 ## Team
 
@@ -64,7 +64,11 @@ This global model scored **0.83547** on Kaggle.
 
 **SIFT check for leopards**
 
-As a final step, we verify up to six leopard candidates with RootSIFT, using up to two compatible gallery encounters per candidate. A regularised correction then adjusts the full candidate set, and a three outcome model estimates whether the query is novel, known and covered by the shortlist, or known but missed. This brought our score to **0.84209**.
+In the first local refinement, we verify up to six leopard candidates with RootSIFT, using up to two compatible gallery encounters per candidate. A regularised correction then adjusts the full candidate set, and a three outcome model estimates whether the query is novel, known and covered by the shortlist, or known but missed. This brought our score to **0.84209**.
+
+**Final local-descriptor scorer**
+
+We add encounter-balanced Gaussian identity scores and up to four proposals each from Fisher vectors and LNBNN. The encoders fit on each fold's gallery. Leopard gets extra SIFT verification for leading proposals. Hyena uses the dual-branch scores as its anchor. We blend that evidence with a gradient-boosted candidate scorer and a three-outcome novelty model trained on encounter-disjoint inner folds.
 
 ## Results
 
@@ -72,9 +76,9 @@ As a final step, we verify up to six leopard candidates with RootSIFT, using up 
 | --- | --- | ---: | ---: | ---: | ---: |
 | 1. Cosine k-NN | Nearest neighbours, with `new_individual` always fifth | 0.5765 | 0.5327 | 0.5518 | — |
 | 2. Viewpoint-aware k-NN | Hyena flank penalty and per-species novelty thresholds | 0.7898 | 0.7571 | 0.7714 | 0.75821 |
-| 3. Two-branch GBDT + SIFT | Diffusion + k-reciprocal, then leopard verification | 0.9018 | 0.8353 | 0.8643 | **0.84209** |
+| 3. Final two-branch GBDT | Gaussian identity scores, SIFT, Fisher vectors and LNBNN | 0.9018 | 0.8353 | 0.8643 | **0.84780** |
 
-The CV numbers for Model 3 are for the global model (0.83547 on Kaggle), before the SIFT step.
+The Model 3 CV figures describe the global backbone, which scored **0.83547** on Kaggle. The leopard SIFT release scored **0.84209**, and the Gaussian candidate scoring and verification release scored **0.84604**.
 
 We tested the leopard refinement separately in a nested encounter disjoint audit. It gained +0.00574 weighted MAP@5, and +0.00508 with thinner galleries. The gains on the three leopard folds were +0.01314, +0.01236 and +0.00503. The known query encounters hadn't been used in the earlier audit, though the novel identities partly overlapped with it.
 
@@ -89,7 +93,7 @@ Intermediate versions, rejected experiments and demo notes are in [MODEL_LOG.md]
 - Analysed its errors and showed that not prioritising unseen animals leaves encounter-disjoint MAP@5 at 0.5518
 
 **Raunak Mishra (2024455)**
-- Designed and implemented Model 3 (`submission_model3.csv` / `submission.csv`): the LDA/PCA whitening, debiasing, diffusion, k-reciprocal re-ranking and two-stage GBDT ensembles (including `GradientBoostingClassifier`)
+- Designed and implemented the Model 3 backbone including LDA/PCA whitening, debiasing, diffusion, k-reciprocal re-ranking and two-stage GBDT ensembles (including `GradientBoostingClassifier`)
 - Replaced the fixed novelty thresholds with estimated probabilities, query burst pooling and expected MAP@5 decoding
 - Refactored `run_pipeline.py` and the notebook, taking our public score from 0.75821 to 0.835
 
@@ -129,7 +133,7 @@ ML-Project3-Wildlife-ReID/
         │   ├── miewid_ids.csv           # sighting ID to embedding index
         │   ├── miewid_features.npy      # 2,152-dim MiewID descriptors
         │   └── sample_submission.csv    # submission format
-        ├── sift_features_train.npz/     # SIFT arrays (needed for 0.84209)
+        ├── sift_features_train.npz/     # extracted per-image SIFT arrays
         └── sift_features_test.npz/
 ```
 
@@ -141,9 +145,11 @@ A flat `data/` folder, `data/projectwild3/reid_student_data_main/` and `projectw
 python run_pipeline.py
 ```
 
-This cross-validates all three models and writes `submission_model1.csv`, `submission_model2.csv`, `submission_model3.csv` and `submission.csv` (our best Model 3 predictions) to the project root. To write them elsewhere, set `REID_OUTPUT_DIR`.
+This cross-validates all three models and writes `submission_model1.csv`, `submission_model2.csv`, `submission_model3.csv` and `submission.csv` to `outputs/`. Set `REID_OUTPUT_DIR` to use another destination.
 
-To reproduce 0.84209, both SIFT stores must be extracted folders with `_xy.npy` and `_desc.npy` files for each image. If both are missing, the script says so and falls back to the global-only Model 3 (0.83547).
+Both SIFT stores must be extracted folders with `_xy.npy` and `_desc.npy` files for each image. Set `REID_MODEL3=sift` to run the historical **0.84209** version. If both stores are missing, the script uses the global-only Model 3.
+
+The checked-in `submission.csv` contains the exact scored predictions. Its SHA-256 is `b9e7ab82f8fb98f1fe2ad8d8909068c751b39223d98f1d0b9e1eb7f1d4955011`.
 
 ### 4. Or use the notebook
 
@@ -151,7 +157,7 @@ To reproduce 0.84209, both SIFT stores must be extracted folders with `_xy.npy` 
 jupyter notebook Wildlife_ReID_Pipeline.ipynb
 ```
 
-Start it from the project root, or set `REID_DATA_DIR`. It has the same three models and leopard refinement as the script.
+Start it from the project root, or set `REID_DATA_DIR`. It has the same three models and final local-descriptor scorer as the script.
 
 ## Files
 
@@ -159,11 +165,12 @@ Start it from the project root, or set `REID_DATA_DIR`. It has the same three mo
 | --- | --- |
 | [`run_pipeline.py`](run_pipeline.py) | Runs all three models |
 | [`sift_rerank.py`](sift_rerank.py) | SIFT re-ranking used by the pipeline |
+| [`final_rerank.py`](final_rerank.py), [`local_encoders.py`](local_encoders.py) | Final candidate scoring and local descriptor encoders |
 | [`requirements.txt`](requirements.txt) | Dependencies |
 | [`Wildlife_ReID_Pipeline.ipynb`](Wildlife_ReID_Pipeline.ipynb) | Walkthrough of the same models |
 | [`MODEL_LOG.md`](MODEL_LOG.md) | Experiment results and decisions |
 | [`submission_model1.csv`](submission_model1.csv), [`submission_model2.csv`](submission_model2.csv) | Earlier predictions |
-| [`submission.csv`](submission.csv), [`submission_model3.csv`](submission_model3.csv) | Final predictions (identical, 0.84209) |
+| [`submission.csv`](submission.csv), [`submission_model3.csv`](submission_model3.csv) | Final predictions (identical, 0.84780) |
 
 ## Course rules
 

@@ -1,0 +1,3 @@
+# Retain the exact bytes of the scored submission on all platforms.
+/submission.csv -text whitespace=trailing-space,space-before-tab,cr-at-eol
+/submission_model3.csv -text whitespace=trailing-space,space-before-tab,cr-at-eol

@@ -11,6 +11,7 @@ __pycache__/
 data/
 /projectwild3/
 cache/
+/outputs/
 *.zip
 *.npy
 *.npz
@@ -33,6 +34,10 @@ reid_features_engine.py
 gbdt_pipeline_core.py
 wildlife_reid_pipeline.py
 PROJECT_REPORT.md
+/Project Kaggle Details.pdf
+/Project-Instructions.pdf
+/Rounak plan.pdf
+/Sabari plan.md
 
 # Intermediate experiment submissions
 submission_v*.csv
