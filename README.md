@@ -15,13 +15,13 @@ This repo has our code and final submissions for the Wildlife Re-Identification 
 
 ## The problem
 
-We have to identify individual spotted hyenas and leopards from camera-trap sightings. We're given 2,152-dimensional MiewID embeddings and precomputed SIFT descriptors. The test set has 2,791 images, and each one is either an individual seen in training (of the same species) or an unseen animal, which should be labelled `new_individual`. The metric is MAP@5.
+We have to identify individual spotted hyenas and leopards from camera-trap sightings. We're given 2152-dimensional MiewID embeddings and precomputed SIFT descriptors. The test set has 2791 images, and each one is either an individual seen in training (of the same species) or an unseen animal, which should be labelled `new_individual`. The metric is MAP@5.
 
 ## Our approach
 
 ### Basics
 
-We L2-normalise all MiewID descriptors, so a dot product gives cosine similarity. Hyenas and leopards are always retrieved separately.
+We L2 normalise all MiewID descriptors, so a dot product gives cosine similarity. Hyenas and leopards are always retrieved separately.
 
 ### Validation
 
@@ -31,7 +31,7 @@ To get around this, we group frames of the same animal into encounters (cosine â
 
 ### Left and right flanks
 
-Hyenas and leopards have different coat markings on their left and right sides. Model 2 handles this with a -0.05 penalty for opposite-flank matches in hyenas. Model 3 instead builds separate `left`, `right` and `neutral` prototypes for each identity.
+Hyenas and leopards have different coat markings on their left and right sides. Model 2 handles this with a -0.05 penalty for opposite flank matches in hyenas. Model 3 instead builds separate `left`, `right` and `neutral` prototypes for each identity.
 
 ### Model 3
 
@@ -53,7 +53,7 @@ Model 3 combines two retrieval branches.
 
 **Putting them together**
 
-A first-stage ensemble (`LGBMClassifier`, `HistGradientBoostingClassifier`, `LGBMRanker`) scores candidates from both branches. A second-stage ensemble estimates the probability that a query is a new individual. We then decode the top-5 list by maximising expected MAP@5, blending the two branches as follows:
+A first-stage ensemble (`LGBMClassifier`, `HistGradientBoostingClassifier`, `LGBMRanker`) scores candidates from both branches. A second stage ensemble estimates the probability that a query is a new individual. We then decode the top-5 list by maximising expected MAP@5, blending the two branches as follows:
 
 | Species | Diffusion | k-reciprocal |
 | --- | ---: | ---: |
@@ -64,7 +64,7 @@ This global model scored **0.83547** on Kaggle.
 
 **SIFT check for leopards**
 
-As a final step, we verify up to six leopard candidates with RootSIFT, using up to two compatible gallery encounters per candidate. A regularised correction then adjusts the full candidate set, and a three-outcome model estimates whether the query is novel, known and covered by the shortlist, or known but missed. This brought our score to **0.84209**.
+As a final step, we verify up to six leopard candidates with RootSIFT, using up to two compatible gallery encounters per candidate. A regularised correction then adjusts the full candidate set, and a three outcome model estimates whether the query is novel, known and covered by the shortlist, or known but missed. This brought our score to **0.84209**.
 
 ## Results
 
@@ -76,7 +76,7 @@ As a final step, we verify up to six leopard candidates with RootSIFT, using up 
 
 The CV numbers for Model 3 are for the global model (0.83547 on Kaggle), before the SIFT step.
 
-We tested the leopard refinement separately in a nested encounter-disjoint audit. It gained +0.00574 weighted MAP@5, and +0.00508 with thinner galleries. The gains on the three leopard folds were +0.01314, +0.01236 and +0.00503. The known query encounters hadn't been used in the earlier audit, though the novel identities partly overlapped with it.
+We tested the leopard refinement separately in a nested encounter disjoint audit. It gained +0.00574 weighted MAP@5, and +0.00508 with thinner galleries. The gains on the three leopard folds were +0.01314, +0.01236 and +0.00503. The known query encounters hadn't been used in the earlier audit, though the novel identities partly overlapped with it.
 
 Intermediate versions, rejected experiments and demo notes are in [MODEL_LOG.md](MODEL_LOG.md).
 
@@ -90,17 +90,17 @@ Intermediate versions, rejected experiments and demo notes are in [MODEL_LOG.md]
 
 **Raunak Mishra (2024455)**
 - Designed and implemented Model 3 (`submission_model3.csv` / `submission.csv`): the LDA/PCA whitening, debiasing, diffusion, k-reciprocal re-ranking and two-stage GBDT ensembles (including `GradientBoostingClassifier`)
-- Replaced the fixed novelty thresholds with estimated probabilities, query-burst pooling and expected MAP@5 decoding
+- Replaced the fixed novelty thresholds with estimated probabilities, query burst pooling and expected MAP@5 decoding
 - Refactored `run_pipeline.py` and the notebook, taking our public score from 0.75821 to 0.835
 
 **Rishabh Khannawalia (2024463)**
-- Found the burst leakage in random splits and built the encounter-disjoint 3-fold open-set validation
+- Found the burst leakage in random splits and built the encounter-disjoint 3-fold open set validation
 - Implemented and tuned Model 2's novelty thresholds (0.52 for hyenas, 0.54 for leopards)
-- Checked the submissions (2,791 rows, valid same-species IDs, no nulls) and that whitening respected fold boundaries
+- Checked the submissions (2,791 rows, valid same species IDs, no nulls) and that whitening respected fold boundaries
 
 **Shakti (2024519)**
 - Audited the viewpoint metadata and verified the left/right flank asymmetry in both species
-- Implemented Model 2's flank penalty and Model 3's viewpoint-split prototypes
+- Implemented Model 2's flank penalty and Model 3's viewpoint split prototypes
 - Analysed where Model 2 failed (background lighting, suppressed singletons, flat top-5 confidence), which motivated Model 3
 
 ## Running the code
@@ -169,6 +169,6 @@ Start it from the project root, or set `REID_DATA_DIR`. It has the same three mo
 
 - We used only the supplied MiewID embeddings, SIFT arrays and metadata, with no raw images.
 - No deep learning frameworks or neural network layers (no PyTorch, TensorFlow or Keras).
-- No external data or pre-trained models; everything is trained on the provided training features.
+- No external data or pretrained models; everything is trained on the provided training features.
 - Libraries used are from the permitted list: `numpy`, `pandas`, `scipy`, `scikit-learn`, `lightgbm`.
-- The submission has exactly 2,791 rows matching the IDs in `test.csv`, with valid labels and no NaNs.
+- The submission has exactly 2791 rows matching the IDs in `test.csv`, with valid labels and no NaNs.
